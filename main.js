@@ -1,13 +1,13 @@
-const startCaptureButton = document.getElementById('startCaptureButton');
-const screenVideo = document.getElementById('screenVideo');
-const cropCanvas = document.getElementById('cropCanvas');
-const cropCtx = cropCanvas.getContext('2d');
-const videoContainer = document.getElementById('videoContainer');
-const cropOverlay = document.getElementById('cropOverlay');
-const mapCanvas = document.getElementById('mapCanvas');
-const mapCtx = mapCanvas.getContext('2d');
-const largeMapCanvas = document.getElementById('largeMapCanvas');
-const largeMapCtx = largeMapCanvas.getContext('2d');
+let startCaptureButton = document.getElementById('startCaptureButton');
+let screenVideo = document.getElementById('screenVideo');
+let cropCanvas = document.getElementById('cropCanvas');
+let cropCtx = cropCanvas.getContext('2d');
+let videoContainer = document.getElementById('videoContainer');
+let cropOverlay = document.getElementById('cropOverlay');
+let mapCanvas = document.getElementById('mapCanvas');
+let mapCtx = mapCanvas.getContext('2d');
+let largeMapCanvas = document.getElementById('largeMapCanvas');
+let largeMapCtx = largeMapCanvas.getContext('2d');
 
 let captureStream = null;
 let cropSettings = {
@@ -27,6 +27,8 @@ let autoMapInterval = null;
 let playerTile = null; // { row, col }
 let gridCurrent = []; // grid for current view
 let gridAll = {}; // overall explored region, keys as "r,c"
+// New variable to track the origin for expanded mapping.
+let autoMapOrigin = null; // { x, y } in cropped canvas coordinates
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -40,7 +42,8 @@ async function startCapture() {
       // Set map canvas size to match cropped area for current view.
       mapCanvas.width = cropSettings.width;
       mapCanvas.height = cropSettings.height;
-      largeMapCanvas.width = cropSettings.width * 2; // start with double size; can adjust later.
+      // Initialize large map canvas; size will be adjusted later.
+      largeMapCanvas.width = cropSettings.width * 2; 
       largeMapCanvas.height = cropSettings.height * 2;
       requestAnimationFrame(updateCrop);
     }
@@ -161,6 +164,11 @@ function detectWhiteCircle() {
     cropCtx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
     cropCtx.stroke();
     
+    // Initialize the auto map origin the first time we detect a circle.
+    if (!autoMapOrigin) {
+      autoMapOrigin = { x: centerX, y: centerY };
+    }
+    
     // Once a circle is detected, run auto mapping update.
     updateAutoMap();
   } else {
@@ -241,54 +249,83 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Auto Map update function – continuously checks for the white circle’s tile position
+// Auto Map update function – now only updates the expanded map when the dot (white circle center) has moved at least a full diameter away from the last recorded center.
 function updateAutoMap() {
   if (!detectedCircle) return;
   
-  // Use circle's diameter as tile size.
-  const tileSize = detectedCircle.radius * 2;
-  const cols = Math.floor(cropCanvas.width / tileSize);
-  const rows = Math.floor(cropCanvas.height / tileSize);
+  // Use circle's diameter as threshold distance.
+  const movementThreshold = detectedCircle.radius * 2;
   
-  // Sample brightness for each tile.
-  gridCurrent = [];
-  for (let r = 0; r < rows; r++) {
-    gridCurrent[r] = [];
-    for (let c = 0; c < cols; c++) {
-      const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
-      let total = 0;
-      const data = imageData.data;
-      for (let i = 0; i < data.length; i += 4) {
-        total += (data[i] + data[i+1] + data[i+2]) / 3;
-      }
-      const avg = total / (data.length / 4);
-      // 0 for empty (dark), 1 for tile present.
-      gridCurrent[r][c] = avg < 80 ? 0 : 1;
-      
-      // Merge into overall map.
-      const key = `${r},${c}`;
-      if (!(key in gridAll)) {
-        gridAll[key] = gridCurrent[r][c];
+  // Check distance from the last autoMapOrigin.
+  const dx = detectedCircle.x - autoMapOrigin.x;
+  const dy = detectedCircle.y - autoMapOrigin.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  
+  // Only update mapping if the dot has moved far enough.
+  if (distance >= movementThreshold) {
+    // Use circle's diameter as tile size.
+    const tileSize = detectedCircle.radius * 2;
+    const cols = Math.floor(cropCanvas.width / tileSize);
+    const rows = Math.floor(cropCanvas.height / tileSize);
+    
+    // Sample brightness for each tile in the current view.
+    gridCurrent = [];
+    for (let r = 0; r < rows; r++) {
+      gridCurrent[r] = [];
+      for (let c = 0; c < cols; c++) {
+        const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
+        let total = 0;
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          total += (data[i] + data[i+1] + data[i+2]) / 3;
+        }
+        const avg = total / (data.length / 4);
+        // 0 for empty (dark), 1 for tile present.
+        gridCurrent[r][c] = avg < 80 ? 0 : 1;
+        
+        // Merge into overall map if new tile detected.
+        const key = `${r},${c}`;
+        if (!(key in gridAll)) {
+          gridAll[key] = gridCurrent[r][c];
+        }
       }
     }
-  }
-  
-  // Determine current player tile based on white circle center.
-  const currentCol = Math.floor(detectedCircle.x / tileSize);
-  const currentRow = Math.floor(detectedCircle.y / tileSize);
-  
-  // Initialize playerTile if null.
-  if (!playerTile) {
-    playerTile = { row: currentRow, col: currentCol };
-  } else {
-    // If moved, update player tile.
-    if (playerTile.row !== currentRow || playerTile.col !== currentCol) {
+    
+    // Determine current player tile based on white circle center.
+    const currentCol = Math.floor(detectedCircle.x / tileSize);
+    const currentRow = Math.floor(detectedCircle.y / tileSize);
+    
+    // Initialize playerTile if null.
+    if (!playerTile) {
       playerTile = { row: currentRow, col: currentCol };
+    } else {
+      // Update player tile if moved.
+      if (playerTile.row !== currentRow || playerTile.col !== currentCol) {
+        playerTile = { row: currentRow, col: currentCol };
+      }
+    }
+    
+    // Update the auto map origin to the current center.
+    autoMapOrigin = { x: detectedCircle.x, y: detectedCircle.y };
+    
+    drawCurrentMap(tileSize, rows, cols);
+    drawLargeMap(tileSize);
+  } else {
+    // Even if movement threshold hasn't been met, still update the current view map.
+    if (detectedCircle) {
+      const tileSize = detectedCircle.radius * 2;
+      const cols = Math.floor(cropCanvas.width / tileSize);
+      const rows = Math.floor(cropCanvas.height / tileSize);
+      
+      // Determine current player tile based on white circle center.
+      const currentCol = Math.floor(detectedCircle.x / tileSize);
+      const currentRow = Math.floor(detectedCircle.y / tileSize);
+      if (!playerTile) {
+        playerTile = { row: currentRow, col: currentCol };
+      }
+      drawCurrentMap(tileSize, rows, cols);
     }
   }
-  
-  drawCurrentMap(tileSize, rows, cols);
-  drawLargeMap(tileSize);
 }
 
 // Draw current cropped map with grid and marker.
