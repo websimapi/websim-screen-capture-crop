@@ -25,11 +25,17 @@ let startX = 0;
 let startY = 0;
 let detectedCircle = null; // store detected white circle info
 
-// Global variables for live mapping
-let liveMapping = false;
-let liveMapInterval = null;
+// Global variables for auto mapping
 let globalMarker = null; // current marker position from autoMap
 let initialGlobalPosition = null;  // initial position for persistent mapping
+let autoMapGrid = null;
+let gridRows = 0;
+let gridCols = 0;
+let gridTileSize = 0;
+
+// Global variable for live mapping
+let liveMapping = false;
+let liveMapRequestID = null;
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -244,36 +250,36 @@ function autoMap() {
     return;
   }
   
-  const tileSize = detectedCircle.radius * 2;
-  const cols = Math.floor(cropCanvas.width / tileSize);
-  const rows = Math.floor(cropCanvas.height / tileSize);
+  gridTileSize = detectedCircle.radius * 2;
+  gridCols = Math.floor(cropCanvas.width / gridTileSize);
+  gridRows = Math.floor(cropCanvas.height / gridTileSize);
   
   // Create grid with brightness sampling.
-  const grid = [];
-  for (let r = 0; r < rows; r++) {
-    grid[r] = [];
-    for (let c = 0; c < cols; c++) {
-      const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
+  autoMapGrid = [];
+  for (let r = 0; r < gridRows; r++) {
+    autoMapGrid[r] = [];
+    for (let c = 0; c < gridCols; c++) {
+      const imageData = cropCtx.getImageData(c * gridTileSize, r * gridTileSize, gridTileSize, gridTileSize);
       let total = 0;
       const data = imageData.data;
       for (let i = 0; i < data.length; i += 4) {
         total += (data[i] + data[i+1] + data[i+2]) / 3;
       }
       const avg = total / (data.length / 4);
-      grid[r][c] = avg < 80 ? 0 : 1;
+      autoMapGrid[r][c] = avg < 80 ? 0 : 1;
     }
   }
   
   // Draw the initial grid map.
   function drawGrid() {
     mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
         mapCtx.strokeStyle = '#555';
-        mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
-        if (grid[r][c] === 1) {
+        mapCtx.strokeRect(c * gridTileSize, r * gridTileSize, gridTileSize, gridTileSize);
+        if (autoMapGrid[r][c] === 1) {
           mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
-          mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+          mapCtx.fillRect(c * gridTileSize, r * gridTileSize, gridTileSize, gridTileSize);
         }
       }
     }
@@ -282,8 +288,8 @@ function autoMap() {
   // Marker object to animate.
   let marker = { row: 0, col: 0 };
   // Determine starting marker tile.
-  marker.col = Math.floor(detectedCircle.x / tileSize);
-  marker.row = Math.floor(detectedCircle.y / tileSize);
+  marker.col = Math.floor(detectedCircle.x / gridTileSize);
+  marker.row = Math.floor(detectedCircle.y / gridTileSize);
   // Set global marker for persistent mapping.
   globalMarker = { ...marker };
   // Record the initial marker position for offset calculations.
@@ -295,8 +301,8 @@ function autoMap() {
     mapCtx.beginPath();
     mapCtx.lineWidth = 2;
     mapCtx.strokeStyle = '#FF0000';
-    const markerX = marker.col * tileSize + tileSize / 2;
-    const markerY = marker.row * tileSize + tileSize / 2;
+    const markerX = marker.col * gridTileSize + gridTileSize / 2;
+    const markerY = marker.row * gridTileSize + gridTileSize / 2;
     mapCtx.arc(markerX, markerY, detectedCircle.radius / 2, 0, 2 * Math.PI);
     mapCtx.stroke();
   }
@@ -310,15 +316,17 @@ function autoMap() {
     { dr: 0, dc: 1 }
   ];
   
-  // Animate marker movement.
-  const interval = setInterval(() => {
+  // Animate marker movement using faster intervals.
+  const markerMovementInterval = 100; // faster refresh rate
+  const autoMapInterval = setInterval(() => {
     let moved = false;
+    // Randomly attempt moves.
     for (let attempt = 0; attempt < 4; attempt++) {
       const dir = directions[Math.floor(Math.random() * directions.length)];
       const newRow = marker.row + dir.dr;
       const newCol = marker.col + dir.dc;
-      if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols) {
-        if (grid[newRow][newCol] === 0) {
+      if (newRow >= 0 && newRow < gridRows && newCol >= 0 && newCol < gridCols) {
+        if (autoMapGrid[newRow][newCol] === 0) {
           marker.row = newRow;
           marker.col = newCol;
           moved = true;
@@ -327,76 +335,85 @@ function autoMap() {
       }
     }
     if (!moved) {
-      clearInterval(interval);
+      clearInterval(autoMapInterval);
       if (liveMapping) {
         stopLiveMapping();
       }
     }
     globalMarker = { ...marker };
     drawMarker();
-  }, 500);
+  }, markerMovementInterval);
 }
 
-// Live Map functionality.
-// This will keep a persistent mapping of the user's traveled path.
-// It uses the global marker position from autoMap and maps it on a persistent canvas.
+autoMapButton.addEventListener('click', autoMap);
+
+// Persistent Live Mapping functionality using requestAnimationFrame for smoother updates.
 function startLiveMapping() {
-  if (!globalMarker || !initialGlobalPosition) {
+  if (!globalMarker || !initialGlobalPosition || !autoMapGrid) {
     alert("Please run Auto Map first to establish a reference point.");
     return;
   }
   liveMapping = true;
-  // Set persistent map canvas size to a larger area.
-  persistentMapCanvas.width = cropCanvas.width * 2;
-  persistentMapCanvas.height = cropCanvas.height * 2;
-  // Fill background.
-  persistentMapCtx.fillStyle = '#eee';
-  persistentMapCtx.fillRect(0, 0, persistentMapCanvas.width, persistentMapCanvas.height);
-  // Draw initial marker on persistent map at center.
-  const centerX = persistentMapCanvas.width / 2;
-  const centerY = persistentMapCanvas.height / 2;
-  // Store the last drawn persistent position.
-  let lastPersistentPos = { x: centerX, y: centerY };
+  liveMapButton.textContent = "Stop Live Map";
+  // Configure persistent map canvas to be larger and in sync with mapped feed.
+  const scaleFactor = 2;
+  persistentMapCanvas.width = cropCanvas.width * scaleFactor;
+  persistentMapCanvas.height = cropCanvas.height * scaleFactor;
   
-  liveMapInterval = setInterval(() => {
-    // Calculate offset relative to initialGlobalPosition.
-    const deltaCol = globalMarker.col - initialGlobalPosition.col;
-    const deltaRow = globalMarker.row - initialGlobalPosition.row;
-    // Assume each tile in persistent map is scaled similarly.
-    const tileSize = detectedCircle.radius * 2;
-    const persistentX = centerX + deltaCol * tileSize;
-    const persistentY = centerY + deltaRow * tileSize;
-    
-    // Draw a line from the last position to the new position.
-    persistentMapCtx.beginPath();
-    persistentMapCtx.strokeStyle = '#FF0000';
-    persistentMapCtx.lineWidth = 3;
-    persistentMapCtx.moveTo(lastPersistentPos.x, lastPersistentPos.y);
-    persistentMapCtx.lineTo(persistentX, persistentY);
-    persistentMapCtx.stroke();
-    
-    // Draw the marker.
-    persistentMapCtx.beginPath();
-    persistentMapCtx.arc(persistentX, persistentY, detectedCircle.radius / 2, 0, 2 * Math.PI);
-    persistentMapCtx.fillStyle = '#00F';
-    persistentMapCtx.fill();
-    
-    lastPersistentPos = { x: persistentX, y: persistentY };
-  }, 500);
+  // Start the continuous update loop.
+  updatePersistentMap();
+}
+
+function updatePersistentMap() {
+  if (!liveMapping) return;
+  
+  // Clear persistent canvas.
+  persistentMapCtx.clearRect(0, 0, persistentMapCanvas.width, persistentMapCanvas.height);
+  
+  // Draw persistent map similar to the mapped feed.
+  const scaleFactor = 2;
+  // Calculate offset from the initial marker position.
+  const deltaCol = globalMarker.col - initialGlobalPosition.col;
+  const deltaRow = globalMarker.row - initialGlobalPosition.row;
+  
+  // Draw the grid.
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      const cellX = c * gridTileSize * scaleFactor + deltaCol * gridTileSize * scaleFactor;
+      const cellY = r * gridTileSize * scaleFactor + deltaRow * gridTileSize * scaleFactor;
+      persistentMapCtx.strokeStyle = '#555';
+      persistentMapCtx.strokeRect(cellX, cellY, gridTileSize * scaleFactor, gridTileSize * scaleFactor);
+      if (autoMapGrid[r][c] === 1) {
+        persistentMapCtx.fillStyle = 'rgba(0,0,0,0.3)';
+        persistentMapCtx.fillRect(cellX, cellY, gridTileSize * scaleFactor, gridTileSize * scaleFactor);
+      }
+    }
+  }
+  
+  // Draw the live marker.
+  persistentMapCtx.beginPath();
+  persistentMapCtx.lineWidth = 2;
+  persistentMapCtx.strokeStyle = '#FF0000';
+  const markerX = (globalMarker.col * gridTileSize + gridTileSize / 2 + deltaCol * gridTileSize) * scaleFactor;
+  const markerY = (globalMarker.row * gridTileSize + gridTileSize / 2 + deltaRow * gridTileSize) * scaleFactor;
+  persistentMapCtx.arc(markerX, markerY, (detectedCircle.radius / 2) * scaleFactor, 0, 2 * Math.PI);
+  persistentMapCtx.stroke();
+  
+  liveMapRequestID = requestAnimationFrame(updatePersistentMap);
 }
 
 function stopLiveMapping() {
   liveMapping = false;
-  clearInterval(liveMapInterval);
+  liveMapButton.textContent = "Start Live Map";
+  if (liveMapRequestID) {
+    cancelAnimationFrame(liveMapRequestID);
+  }
 }
 
-autoMapButton.addEventListener('click', autoMap);
 liveMapButton.addEventListener('click', () => {
   if (!liveMapping) {
     startLiveMapping();
-    liveMapButton.textContent = "Stop Live Map";
   } else {
     stopLiveMapping();
-    liveMapButton.textContent = "Start Live Map";
   }
 });
