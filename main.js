@@ -1,9 +1,12 @@
 const startCaptureButton = document.getElementById('startCaptureButton');
+const autoMapButton = document.getElementById('autoMapButton');
 const screenVideo = document.getElementById('screenVideo');
 const cropCanvas = document.getElementById('cropCanvas');
 const cropCtx = cropCanvas.getContext('2d');
 const videoContainer = document.getElementById('videoContainer');
 const cropOverlay = document.getElementById('cropOverlay');
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
 
 let captureStream = null;
 let cropSettings = {
@@ -16,6 +19,7 @@ let cropSettings = {
 let isDragging = false;
 let startX = 0;
 let startY = 0;
+let detectedCircle = null; // store detected white circle info
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -26,6 +30,9 @@ async function startCapture() {
       // Initialize canvas dimensions.
       cropCanvas.width = cropSettings.width;
       cropCanvas.height = cropSettings.height;
+      // Set map canvas size to match cropped area for simplicity.
+      mapCanvas.width = cropSettings.width;
+      mapCanvas.height = cropSettings.height;
       requestAnimationFrame(updateCrop);
     }
   } catch (error) {
@@ -140,6 +147,9 @@ function detectWhiteCircle() {
     const centerY = (bestRegion.minY + bestRegion.maxY) / 2;
     const radius = Math.max(bestRegion.maxX - bestRegion.minX, bestRegion.maxY - bestRegion.minY) / 2;
     
+    // Store detected circle for auto mapping.
+    detectedCircle = { x: centerX, y: centerY, radius };
+    
     // Clear any previous overlay by redrawing the image data.
     cropCtx.putImageData(imageData, 0, 0);
     
@@ -148,6 +158,8 @@ function detectWhiteCircle() {
     cropCtx.strokeStyle = '#00FF00';
     cropCtx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
     cropCtx.stroke();
+  } else {
+    detectedCircle = null;
   }
 }
 
@@ -175,8 +187,11 @@ function updateCropSettingsFromOverlay() {
     height: Math.round(overlayRect.height * scaleY)
   };
 
+  // Update canvas sizes.
   cropCanvas.width = cropSettings.width;
   cropCanvas.height = cropSettings.height;
+  mapCanvas.width = cropSettings.width;
+  mapCanvas.height = cropSettings.height;
 }
 
 // Mouse event handlers for drag selection.
@@ -220,3 +235,120 @@ window.addEventListener('mouseup', (e) => {
 startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
+
+// Auto Map functionality
+// This function will analyze the cropped feed, and use the detected white circle's diameter as a tile size.
+// Then it will "move" a marker algorithmically around the feed. It simulates checking adjacent tiles,
+// where a tile is considered empty if its average color is dark.
+function autoMap() {
+  if (!detectedCircle) {
+    alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
+    return;
+  }
+  
+  // Set tile size as circle's diameter.
+  const tileSize = detectedCircle.radius * 2;
+  const cols = Math.floor(cropCanvas.width / tileSize);
+  const rows = Math.floor(cropCanvas.height / tileSize);
+  
+  // Create a grid for mapping.
+  const grid = [];
+  for (let r = 0; r < rows; r++) {
+    grid[r] = [];
+    for (let c = 0; c < cols; c++) {
+      // Sample average brightness for each tile.
+      const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
+      let total = 0;
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i+=4) {
+        // Grayscale value.
+        total += (data[i] + data[i+1] + data[i+2]) / 3;
+      }
+      const avg = total / (data.length / 4);
+      // If average brightness is less than 80, consider it empty.
+      grid[r][c] = avg < 80 ? 0 : 1;
+    }
+  }
+  
+  // Draw the grid map on the mapCanvas
+  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  mapCtx.strokeStyle = '#555';
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
+      // Mark filled tiles.
+      if (grid[r][c] === 1) {
+        mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
+        mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+      }
+    }
+  }
+  
+  // Starting position: find the tile containing the white circle center.
+  const startCol = Math.floor(detectedCircle.x / tileSize);
+  const startRow = Math.floor(detectedCircle.y / tileSize);
+  
+  // Marker object to animate.
+  let marker = { row: startRow, col: startCol };
+  
+  // Draw initial marker.
+  function drawMarker() {
+    // Clear previous marker overlay.
+    mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+    // Redraw grid.
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        mapCtx.strokeStyle = '#555';
+        mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
+        if (grid[r][c] === 1) {
+          mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
+          mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+        }
+      }
+    }
+    // Draw marker circle.
+    mapCtx.beginPath();
+    mapCtx.lineWidth = 2;
+    mapCtx.strokeStyle = '#FF0000';
+    const markerX = marker.col * tileSize + tileSize / 2;
+    const markerY = marker.row * tileSize + tileSize / 2;
+    mapCtx.arc(markerX, markerY, detectedCircle.radius / 2, 0, 2 * Math.PI);
+    mapCtx.stroke();
+  }
+  
+  drawMarker();
+  
+  // Simple algorithm: move marker in random direction among up, down, left, right if the tile is empty.
+  const directions = [
+    { dr: -1, dc: 0 },
+    { dr: 1, dc: 0 },
+    { dr: 0, dc: -1 },
+    { dr: 0, dc: 1 }
+  ];
+  
+  const interval = setInterval(() => {
+    let moved = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const dir = directions[Math.floor(Math.random() * directions.length)];
+      const newRow = marker.row + dir.dr;
+      const newCol = marker.col + dir.dc;
+      // Check boundaries.
+      if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols) {
+        // Only move if the destination tile is empty.
+        if (grid[newRow][newCol] === 0) {
+          marker.row = newRow;
+          marker.col = newCol;
+          moved = true;
+          break;
+        }
+      }
+    }
+    if (!moved) {
+      // If unable to move, stop the animation.
+      clearInterval(interval);
+    }
+    drawMarker();
+  }, 500); // Move every 500ms.
+}
+
+autoMapButton.addEventListener('click', autoMap);
