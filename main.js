@@ -33,7 +33,9 @@ let worldMapData = {}; // key: "r,c", value: grid value (0 for empty, 1 for bloc
 let prevGrid = null; // previous snapshot of grid mapping
 
 // Marker state for mapped feed:
-let marker = null; // will be initialized on autoMap start
+// This marker will represent the red square.
+// It is initialized once autoMap is triggered.
+let marker = null;
 
 // Setup world map canvas dimensions:
 worldMapCanvas.width = 400;
@@ -271,7 +273,11 @@ function autoMap() {
   for (let r = 0; r < rows; r++) {
     grid[r] = [];
     for (let c = 0; c < cols; c++) {
-      // Sample average brightness for each tile.
+      // Ensure tile dimensions are within bounds.
+      if ((c + 1) * tileSize > cropCanvas.width || (r + 1) * tileSize > cropCanvas.height) {
+        grid[r][c] = 1; // Treat out-of-bound areas as blocked.
+        continue;
+      }
       const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
       let total = 0;
       const data = imageData.data;
@@ -284,7 +290,7 @@ function autoMap() {
     }
   }
   
-  // If this is the first time, initialize the marker at the grid cell containing the detected white circle.
+  // Initialize the marker if it hasn't been set yet.
   if (!marker) {
     const startCol = Math.floor(detectedCircle.x / tileSize);
     const startRow = Math.floor(detectedCircle.y / tileSize);
@@ -374,6 +380,9 @@ function autoMap() {
 
 // Draw world map by checking all collected worldMapData tiles.
 function drawWorldMap() {
+  // Guard: if marker is not set, do nothing.
+  if (!marker) return;
+  
   worldMapCtx.clearRect(0, 0, worldMapCanvas.width, worldMapCanvas.height);
   
   // Determine grid extents from collected keys.
