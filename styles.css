@@ -67,7 +67,7 @@ button:hover {
   background: #0056b3;
 }
 
-#cropCanvas, #mapCanvas {
+#cropCanvas, #mapCanvas, #fullMapCanvas {
   border: 2px solid #333;
   display: block;
   max-width: 100%;

@@ -8,6 +8,7 @@ const cropOverlay = document.getElementById('cropOverlay');
 const mapCanvas = document.getElementById('mapCanvas');
 const mapCtx = mapCanvas.getContext('2d');
 const tileInfoDiv = document.getElementById('tileInfo');
+const fullMapCanvas = document.getElementById('fullMapCanvas');
 
 let captureStream = null;
 let cropSettings = {
@@ -30,6 +31,10 @@ let autoMapGrid = null;
 let autoMapRows = 0;
 let autoMapCols = 0;
 let marker = null;  // marker position {row, col}
+
+// New globals for full map merging.
+let globalMarker = null; // global position of the white dot (in tile units)
+let fullMap = {};        // object to store merged tile data, key: "row,col"
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -86,12 +91,12 @@ function detectWhiteCircle() {
   // Create a visited array for flood fill.
   const visited = new Uint8Array(width * height);
   
-  // Threshold value for considering a pixel white.
+  // Threshold for "white".
   const threshold = 240;
   
   let bestRegion = null;
   
-  // Helper: perform flood fill to get connected white region.
+  // Perform flood fill to get a connected white region.
   function floodFill(x, y) {
     const stack = [[x, y]];
     let minX = x, minY = y, maxX = x, maxY = y;
@@ -117,7 +122,6 @@ function detectWhiteCircle() {
       if (cx > maxX) maxX = cx;
       if (cy > maxY) maxY = cy;
       
-      // Check neighbors.
       if (cx > 0) stack.push([cx - 1, cy]);
       if (cx < width - 1) stack.push([cx + 1, cy]);
       if (cy > 0) stack.push([cx, cy - 1]);
@@ -127,7 +131,6 @@ function detectWhiteCircle() {
     return { minX, minY, maxX, maxY, pixelCount };
   }
   
-  // Loop through pixels and apply flood fill for white areas.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -141,7 +144,6 @@ function detectWhiteCircle() {
       
       if (a > 0 && r >= threshold && g >= threshold && b >= threshold) {
         const region = floodFill(x, y);
-        // Consider region only if it's of a reasonable size.
         if (region.pixelCount > 50) {
           if (!bestRegion || region.pixelCount > bestRegion.pixelCount) {
             bestRegion = region;
@@ -151,16 +153,13 @@ function detectWhiteCircle() {
     }
   }
   
-  // If found a best region, draw a circle:
   if (bestRegion) {
     const centerX = (bestRegion.minX + bestRegion.maxX) / 2;
     const centerY = (bestRegion.minY + bestRegion.maxY) / 2;
     const radius = Math.max(bestRegion.maxX - bestRegion.minX, bestRegion.maxY - bestRegion.minY) / 2;
     
-    // Store detected circle for auto mapping.
     detectedCircle = { x: centerX, y: centerY, radius };
     
-    // Clear any previous overlay by redrawing the image data.
     cropCtx.putImageData(imageData, 0, 0);
     
     cropCtx.beginPath();
@@ -171,12 +170,6 @@ function detectWhiteCircle() {
   } else {
     detectedCircle = null;
   }
-}
-
-// Get video container's offset relative to the page.
-function getContainerOffset() {
-  const rect = videoContainer.getBoundingClientRect();
-  return { left: rect.left, top: rect.top };
 }
 
 // Update crop settings based on overlay selection.
@@ -197,14 +190,13 @@ function updateCropSettingsFromOverlay() {
     height: Math.round(overlayRect.height * scaleY)
   };
 
-  // Update canvas sizes.
   cropCanvas.width = cropSettings.width;
   cropCanvas.height = cropSettings.height;
   mapCanvas.width = cropSettings.width;
   mapCanvas.height = cropSettings.height;
 }
 
-// Mouse event handlers for drag selection.
+// Event handlers for drag selection.
 videoContainer.addEventListener('mousedown', (e) => {
   if (!captureStream) return;
   isDragging = true;
@@ -235,7 +227,7 @@ window.addEventListener('mousemove', (e) => {
   cropOverlay.style.height = `${rectHeight}px`;
 });
 
-window.addEventListener('mouseup', (e) => {
+window.addEventListener('mouseup', () => {
   if (!isDragging) return;
   isDragging = false;
   cropOverlay.style.pointerEvents = 'none';
@@ -246,34 +238,33 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Toggle Auto Map functionality.
-// When auto mapping is on, continuously update our mapped feed and animate the marker.
+// Toggle Auto Map: update mapped feed, move marker, and merge into a full map.
 function toggleAutoMap() {
   if (!detectedCircle) {
     alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
     return;
   }
   if (!autoMapRunning) {
-    // Set tile size as circle's diameter.
     autoMapTileSize = detectedCircle.radius * 2;
     autoMapCols = Math.floor(cropCanvas.width / autoMapTileSize);
     autoMapRows = Math.floor(cropCanvas.height / autoMapTileSize);
-    // Create initial grid.
     autoMapGrid = createGrid();
-    // Starting position: find the tile containing the white circle center.
     const startCol = Math.floor(detectedCircle.x / autoMapTileSize);
     const startRow = Math.floor(detectedCircle.y / autoMapTileSize);
     
     marker = { row: startRow, col: startCol };
+    // Initialize global marker and full map.
+    globalMarker = { row: marker.row, col: marker.col };
+    fullMap = {};
     autoMapButton.textContent = 'Stop Auto Map';
     autoMapRunning = true;
     autoMapInterval = setInterval(() => {
-      // Update grid on every interval.
       autoMapGrid = createGrid();
-      // Move marker.
+      const oldMarker = { row: marker.row, col: marker.col };
       moveMarker();
-      // Draw mapped feed.
       drawMappedFeed();
+      updateFullMap();
+      drawFullMap();
     }, 500);
   } else {
     clearInterval(autoMapInterval);
@@ -285,62 +276,62 @@ function toggleAutoMap() {
 
 autoMapButton.addEventListener('click', toggleAutoMap);
 
-// Create grid that reflects the cropped feed.
-// Each cell is 1 if tile is considered non-empty, 0 if the tile is mostly black.
-// A tile is considered empty (0) if more than 19% of its pixels are black,
-// where a pixel is deemed black if its grayscale value is less than 80.
+// Create a grid reflecting the cropped feed.
 function createGrid() {
   const grid = [];
   for (let r = 0; r < autoMapRows; r++) {
     grid[r] = [];
     for (let c = 0; c < autoMapCols; c++) {
-      // Sample pixel data for each tile.
       const imageData = cropCtx.getImageData(c * autoMapTileSize, r * autoMapTileSize, autoMapTileSize, autoMapTileSize);
+      let total = 0;
       const data = imageData.data;
-      let darkCount = 0;
-      const totalPixels = data.length / 4;
       for (let i = 0; i < data.length; i += 4) {
-        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
-        if (avg < 80) darkCount++;
+        total += (data[i] + data[i+1] + data[i+2]) / 3;
       }
-      const blackPercentage = (darkCount / totalPixels) * 100;
-      // If more than 19% black, consider it an empty tile.
-      grid[r][c] = blackPercentage > 19 ? 0 : 1;
+      const avg = total / (data.length / 4);
+      grid[r][c] = avg < 80 ? 0 : 1;
     }
   }
   return grid;
 }
 
-// Move marker in random valid direction (up, down, left, right) if destination cell is empty.
+// Move marker (allowing up to 8-directional moves) if destination tile is empty.
 function moveMarker() {
   const directions = [
     { dr: -1, dc: 0 },
     { dr: 1, dc: 0 },
     { dr: 0, dc: -1 },
-    { dr: 0, dc: 1 }
+    { dr: 0, dc: 1 },
+    { dr: -1, dc: -1 },
+    { dr: -1, dc: 1 },
+    { dr: 1, dc: -1 },
+    { dr: 1, dc: 1 }
   ];
-  
-  let moved = false;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const dir = directions[Math.floor(Math.random() * directions.length)];
+  const shuffled = directions.sort(() => 0.5 - Math.random());
+  const oldMarker = { row: marker.row, col: marker.col };
+  for (const dir of shuffled) {
     const newRow = marker.row + dir.dr;
     const newCol = marker.col + dir.dc;
     if (newRow >= 0 && newRow < autoMapRows && newCol >= 0 && newCol < autoMapCols) {
       if (autoMapGrid[newRow][newCol] === 0) {
         marker.row = newRow;
         marker.col = newCol;
-        moved = true;
-        break;
+        // Update global marker using the delta move.
+        if (globalMarker) {
+          globalMarker.row += (newRow - oldMarker.row);
+          globalMarker.col += (newCol - oldMarker.col);
+        } else {
+          globalMarker = { row: newRow, col: newCol };
+        }
+        return;
       }
     }
   }
-  // If unable to move, do nothing.
 }
 
-// Draw the grid map on the mapCanvas, including the red square marker and the white dot representing the player.
+// Draw the mapped feed with grid, red square marker, and white dot.
 function drawMappedFeed() {
   mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  // Draw grid.
   for (let r = 0; r < autoMapRows; r++) {
     for (let c = 0; c < autoMapCols; c++) {
       mapCtx.strokeStyle = '#555';
@@ -351,10 +342,9 @@ function drawMappedFeed() {
       }
     }
   }
-  // Draw red square marker.
   const markerX = marker.col * autoMapTileSize + autoMapTileSize / 2;
   const markerY = marker.row * autoMapTileSize + autoMapTileSize / 2;
-  const squareSize = detectedCircle.radius; // set square side based on circle radius.
+  const squareSize = detectedCircle ? detectedCircle.radius : autoMapTileSize / 2;
   mapCtx.strokeStyle = '#FF0000';
   mapCtx.lineWidth = 2;
   mapCtx.strokeRect(
@@ -363,7 +353,6 @@ function drawMappedFeed() {
     squareSize,
     squareSize
   );
-  // Draw player's position as a white dot.
   mapCtx.beginPath();
   mapCtx.fillStyle = '#FFFFFF';
   mapCtx.arc(markerX, markerY, 4, 0, 2 * Math.PI);
@@ -371,7 +360,6 @@ function drawMappedFeed() {
 }
 
 // Compute percentage of black pixels in a tile.
-// We define a pixel as black if its grayscale value is less than 80.
 function computeBlackPercentage(tileX, tileY, tileSize) {
   const imageData = cropCtx.getImageData(tileX, tileY, tileSize, tileSize);
   const data = imageData.data;
@@ -384,7 +372,7 @@ function computeBlackPercentage(tileX, tileY, tileSize) {
   return ((darkCount / total) * 100).toFixed(2);
 }
 
-// Add hover functionality on the mapped feed to show black percentage for each tile.
+// Show black percentage on hover.
 mapCanvas.addEventListener('mousemove', (e) => {
   const rect = mapCanvas.getBoundingClientRect();
   const mouseX = e.clientX - rect.left;
@@ -405,3 +393,66 @@ mapCanvas.addEventListener('mousemove', (e) => {
 mapCanvas.addEventListener('mouseleave', () => {
   tileInfoDiv.textContent = '';
 });
+
+// Merge the current autoMap grid into the overall full map.
+function updateFullMap() {
+  if (!globalMarker || !autoMapGrid) return;
+  // Calculate patch origin so that the local marker maps to the global marker.
+  const patchOrigin = {
+    row: globalMarker.row - marker.row,
+    col: globalMarker.col - marker.col
+  };
+  for (let r = 0; r < autoMapRows; r++) {
+    for (let c = 0; c < autoMapCols; c++) {
+      const globalRow = patchOrigin.row + r;
+      const globalCol = patchOrigin.col + c;
+      const key = globalRow + ',' + globalCol;
+      if (fullMap[key] === undefined) {
+        fullMap[key] = autoMapGrid[r][c];
+      }
+    }
+  }
+}
+
+// Render the full map (merged grid) on the fullMapCanvas.
+function drawFullMap() {
+  const keys = Object.keys(fullMap);
+  if (keys.length === 0) return;
+  let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
+  keys.forEach(key => {
+    const [r, c] = key.split(',').map(Number);
+    minRow = Math.min(minRow, r);
+    maxRow = Math.max(maxRow, r);
+    minCol = Math.min(minCol, c);
+    maxCol = Math.max(maxCol, c);
+  });
+  const numRows = maxRow - minRow + 1;
+  const numCols = maxCol - minCol + 1;
+  const tileSize = autoMapTileSize;
+  fullMapCanvas.width = numCols * tileSize;
+  fullMapCanvas.height = numRows * tileSize;
+  const ctx = fullMapCanvas.getContext('2d');
+  ctx.clearRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
+  for (let r = minRow; r <= maxRow; r++) {
+    for (let c = minCol; c <= maxCol; c++) {
+      const key = r + ',' + c;
+      const tile = fullMap[key];
+      const x = (c - minCol) * tileSize;
+      const y = (r - minRow) * tileSize;
+      ctx.strokeStyle = '#555';
+      ctx.strokeRect(x, y, tileSize, tileSize);
+      if (tile === 1) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(x, y, tileSize, tileSize);
+      }
+    }
+  }
+  if (globalMarker) {
+    const globalX = (globalMarker.col - minCol) * tileSize + tileSize / 2;
+    const globalY = (globalMarker.row - minRow) * tileSize + tileSize / 2;
+    ctx.beginPath();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.arc(globalX, globalY, 4, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+}
