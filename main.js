@@ -263,7 +263,7 @@ function toggleAutoMap() {
     autoMapCols = Math.floor(cropCanvas.width / autoMapTileSize);
     autoMapRows = Math.floor(cropCanvas.height / autoMapTileSize);
     autoMapGrid = createGrid();
-    previousGrid = createGrid();  // Initialize previous grid
+    previousGrid = JSON.parse(JSON.stringify(autoMapGrid));  // Initialize previous grid
     const startCol = Math.floor(detectedCircle.x / autoMapTileSize);
     const startRow = Math.floor(detectedCircle.y / autoMapTileSize);
     
@@ -272,9 +272,15 @@ function toggleAutoMap() {
     globalMarker = { row: 0, col: 0 };  // Start at origin of full map
     fullMap = {};
     
-    // Initialize the starting position in the full map
-    const startKey = `${globalMarker.row},${globalMarker.col}`;
-    fullMap[startKey] = 0; // Mark starting position as discovered
+    // Initialize the starting position and surrounding tiles in the full map
+    for (let r = -1; r <= 1; r++) {
+      for (let c = -1; c <= 1; c++) {
+        const key = `${r},${c}`;
+        if (autoMapGrid[marker.row + r] && autoMapGrid[marker.row + r][marker.col + c] !== undefined) {
+          fullMap[key] = autoMapGrid[marker.row + r][marker.col + c];
+        }
+      }
+    }
 
     autoMapButton.textContent = 'Stop Auto Map';
     autoMapRunning = true;
@@ -425,26 +431,34 @@ function updateFullMap() {
   const deltaCol = marker.col - previousMarker.col;
   
   // Update global marker position based on movement
-  if (deltaRow !== 0 || deltaCol !== 0) {
-    globalMarker.row += deltaRow;
-    globalMarker.col += deltaCol;
-  }
+  globalMarker.row += deltaRow;
+  globalMarker.col += deltaCol;
   
   // For each visible tile in current view, update the full map
-  for (let r = 0; r < autoMapRows; r++) {
-    for (let c = 0; c < autoMapCols; c++) {
-      // Calculate global coordinates for this tile
-      const globalRow = globalMarker.row + (r - marker.row);
-      const globalCol = globalMarker.col + (c - marker.col);
+  const viewRadius = 2; // How many tiles around the marker to update
+  
+  for (let r = -viewRadius; r <= viewRadius; r++) {
+    for (let c = -viewRadius; c <= viewRadius; c++) {
+      const gridRow = marker.row + r;
+      const gridCol = marker.col + c;
+      
+      // Skip if outside current grid bounds
+      if (gridRow < 0 || gridRow >= autoMapRows || gridCol < 0 || gridCol >= autoMapCols) {
+        continue;
+      }
+      
+      // Calculate global coordinates
+      const globalRow = globalMarker.row + r;
+      const globalCol = globalMarker.col + c;
       const key = `${globalRow},${globalCol}`;
       
-      // Add tile to full map if:
+      // Update tile in full map if:
       // 1. It's a newly discovered tile
-      // 2. It's different from what we previously knew
-      // 3. It's adjacent to our current position
-      const isAdjacent = Math.abs(r - marker.row) <= 1 && Math.abs(c - marker.col) <= 1;
-      if (isAdjacent || fullMap[key] === undefined) {
-        fullMap[key] = autoMapGrid[r][c];
+      // 2. We're next to the current position (for accuracy)
+      const isNextToMarker = Math.abs(r) <= 1 && Math.abs(c) <= 1;
+      
+      if (fullMap[key] === undefined || isNextToMarker) {
+        fullMap[key] = autoMapGrid[gridRow][gridCol];
       }
     }
   }
@@ -473,7 +487,7 @@ function drawFullMap() {
   minCol -= padding;
   maxCol += padding;
   
-  // Set canvas size based on discovered area plus padding
+  // Set canvas size based on discovered area
   const width = (maxCol - minCol + 1) * autoMapTileSize;
   const height = (maxRow - minRow + 1) * autoMapTileSize;
   
@@ -514,28 +528,26 @@ function drawFullMap() {
   }
   
   // Draw current position (white dot)
-  if (globalMarker) {
-    const x = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
-    const y = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
-    
-    // Draw white dot with glow effect
-    ctx.beginPath();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 2;
-    ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fill();
-    ctx.stroke();
-    
-    // Add glow effect
-    ctx.beginPath();
-    const gradient = ctx.createRadialGradient(x, y, 2, x, y, 20);
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = gradient;
-    ctx.arc(x, y, 20, 0, 2 * Math.PI);
-    ctx.fill();
-  }
+  const dotX = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
+  const dotY = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
+  
+  // Draw white dot with glow effect
+  ctx.beginPath();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.arc(dotX, dotY, 6, 0, 2 * Math.PI);
+  ctx.fill();
+  ctx.stroke();
+  
+  // Add glow effect
+  ctx.beginPath();
+  const gradient = ctx.createRadialGradient(dotX, dotY, 2, dotX, dotY, 20);
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = gradient;
+  ctx.arc(dotX, dotY, 20, 0, 2 * Math.PI);
+  ctx.fill();
   
   updateZoomInfo();
 }
