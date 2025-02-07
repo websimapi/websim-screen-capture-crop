@@ -1,13 +1,13 @@
-let startCaptureButton = document.getElementById('startCaptureButton');
-let screenVideo = document.getElementById('screenVideo');
-let cropCanvas = document.getElementById('cropCanvas');
-let cropCtx = cropCanvas.getContext('2d');
-let videoContainer = document.getElementById('videoContainer');
-let cropOverlay = document.getElementById('cropOverlay');
-let mapCanvas = document.getElementById('mapCanvas');
-let mapCtx = mapCanvas.getContext('2d');
-let largeMapCanvas = document.getElementById('largeMapCanvas');
-let largeMapCtx = largeMapCanvas.getContext('2d');
+const startCaptureButton = document.getElementById('startCaptureButton');
+const autoMapButton = document.getElementById('autoMapButton');
+const screenVideo = document.getElementById('screenVideo');
+const cropCanvas = document.getElementById('cropCanvas');
+const cropCtx = cropCanvas.getContext('2d');
+const videoContainer = document.getElementById('videoContainer');
+const cropOverlay = document.getElementById('cropOverlay');
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
+const tileInfoDiv = document.getElementById('tileInfo');
 
 let captureStream = null;
 let cropSettings = {
@@ -20,15 +20,16 @@ let cropSettings = {
 let isDragging = false;
 let startX = 0;
 let startY = 0;
-let detectedCircle = null; // Detected white circle info
+let detectedCircle = null; // store detected white circle info
 
-// Auto Map globals
+// Auto Map global states
 let autoMapInterval = null;
-let playerTile = null; // { row, col }
-let gridCurrent = []; // grid for current view
-let gridAll = {}; // overall explored region, keys as "r,c"
-// New variable to track the origin for expanded mapping.
-let autoMapOrigin = null; // { x, y } in cropped canvas coordinates
+let autoMapRunning = false;
+let autoMapTileSize = 0;
+let autoMapGrid = null;
+let autoMapRows = 0;
+let autoMapCols = 0;
+let marker = null;  // marker position {row, col}
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -39,12 +40,9 @@ async function startCapture() {
       // Initialize canvas dimensions.
       cropCanvas.width = cropSettings.width;
       cropCanvas.height = cropSettings.height;
-      // Set map canvas size to match cropped area for current view.
+      // Set map canvas size to match cropped area for simplicity.
       mapCanvas.width = cropSettings.width;
       mapCanvas.height = cropSettings.height;
-      // Initialize large map canvas; size will be adjusted later.
-      largeMapCanvas.width = cropSettings.width * 2; 
-      largeMapCanvas.height = cropSettings.height * 2;
       requestAnimationFrame(updateCrop);
     }
   } catch (error) {
@@ -87,11 +85,13 @@ function detectWhiteCircle() {
   
   // Create a visited array for flood fill.
   const visited = new Uint8Array(width * height);
-  const threshold = 240; // white threshold
+  
+  // Threshold value for considering a pixel white.
+  const threshold = 240;
   
   let bestRegion = null;
   
-  // Flood fill helper to get connected white region.
+  // Helper: perform flood fill to get connected white region.
   function floodFill(x, y) {
     const stack = [[x, y]];
     let minX = x, minY = y, maxX = x, maxY = y;
@@ -117,6 +117,7 @@ function detectWhiteCircle() {
       if (cx > maxX) maxX = cx;
       if (cy > maxY) maxY = cy;
       
+      // Check neighbors.
       if (cx > 0) stack.push([cx - 1, cy]);
       if (cx < width - 1) stack.push([cx + 1, cy]);
       if (cy > 0) stack.push([cx, cy - 1]);
@@ -126,7 +127,7 @@ function detectWhiteCircle() {
     return { minX, minY, maxX, maxY, pixelCount };
   }
   
-  // Loop through pixels.
+  // Loop through pixels and apply flood fill for white areas.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -140,6 +141,7 @@ function detectWhiteCircle() {
       
       if (a > 0 && r >= threshold && g >= threshold && b >= threshold) {
         const region = floodFill(x, y);
+        // Consider region only if it's of a reasonable size.
         if (region.pixelCount > 50) {
           if (!bestRegion || region.pixelCount > bestRegion.pixelCount) {
             bestRegion = region;
@@ -149,28 +151,23 @@ function detectWhiteCircle() {
     }
   }
   
+  // If found a best region, draw a circle:
   if (bestRegion) {
-    // Calculate center and radius.
     const centerX = (bestRegion.minX + bestRegion.maxX) / 2;
     const centerY = (bestRegion.minY + bestRegion.maxY) / 2;
     const radius = Math.max(bestRegion.maxX - bestRegion.minX, bestRegion.maxY - bestRegion.minY) / 2;
+    
+    // Store detected circle for auto mapping.
     detectedCircle = { x: centerX, y: centerY, radius };
     
-    // Redraw image and overlay detection.
+    // Clear any previous overlay by redrawing the image data.
     cropCtx.putImageData(imageData, 0, 0);
+    
     cropCtx.beginPath();
     cropCtx.lineWidth = 3;
     cropCtx.strokeStyle = '#00FF00';
     cropCtx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
     cropCtx.stroke();
-    
-    // Initialize the auto map origin the first time we detect a circle.
-    if (!autoMapOrigin) {
-      autoMapOrigin = { x: centerX, y: centerY };
-    }
-    
-    // Once a circle is detected, run auto mapping update.
-    updateAutoMap();
   } else {
     detectedCircle = null;
   }
@@ -249,109 +246,111 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Auto Map update function – now only updates the expanded map when the dot (white circle center) has moved at least a full diameter away from the last recorded center.
-function updateAutoMap() {
-  if (!detectedCircle) return;
-  
-  // Use circle's diameter as threshold distance.
-  const movementThreshold = detectedCircle.radius * 2;
-  
-  // Check distance from the last autoMapOrigin.
-  const dx = detectedCircle.x - autoMapOrigin.x;
-  const dy = detectedCircle.y - autoMapOrigin.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  
-  // Only update mapping if the dot has moved far enough.
-  if (distance >= movementThreshold) {
-    // Use circle's diameter as tile size.
-    const tileSize = detectedCircle.radius * 2;
-    const cols = Math.floor(cropCanvas.width / tileSize);
-    const rows = Math.floor(cropCanvas.height / tileSize);
+// Toggle Auto Map functionality.
+// When auto mapping is on, continuously update our mapped feed and animate the marker.
+function toggleAutoMap() {
+  if (!detectedCircle) {
+    alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
+    return;
+  }
+  if (!autoMapRunning) {
+    // Set tile size as circle's diameter.
+    autoMapTileSize = detectedCircle.radius * 2;
+    autoMapCols = Math.floor(cropCanvas.width / autoMapTileSize);
+    autoMapRows = Math.floor(cropCanvas.height / autoMapTileSize);
+    // Create initial grid.
+    autoMapGrid = createGrid();
+    // Starting position: find the tile containing the white circle center.
+    const startCol = Math.floor(detectedCircle.x / autoMapTileSize);
+    const startRow = Math.floor(detectedCircle.y / autoMapTileSize);
     
-    // Sample brightness for each tile in the current view.
-    gridCurrent = [];
-    for (let r = 0; r < rows; r++) {
-      gridCurrent[r] = [];
-      for (let c = 0; c < cols; c++) {
-        const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
-        let total = 0;
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-          total += (data[i] + data[i+1] + data[i+2]) / 3;
-        }
-        const avg = total / (data.length / 4);
-        // 0 for empty (dark), 1 for tile present.
-        gridCurrent[r][c] = avg < 80 ? 0 : 1;
-        
-        // Merge into overall map if new tile detected.
-        const key = `${r},${c}`;
-        if (!(key in gridAll)) {
-          gridAll[key] = gridCurrent[r][c];
-        }
-      }
-    }
-    
-    // Determine current player tile based on white circle center.
-    const currentCol = Math.floor(detectedCircle.x / tileSize);
-    const currentRow = Math.floor(detectedCircle.y / tileSize);
-    
-    // Initialize playerTile if null.
-    if (!playerTile) {
-      playerTile = { row: currentRow, col: currentCol };
-    } else {
-      // Update player tile if moved.
-      if (playerTile.row !== currentRow || playerTile.col !== currentCol) {
-        playerTile = { row: currentRow, col: currentCol };
-      }
-    }
-    
-    // Update the auto map origin to the current center.
-    autoMapOrigin = { x: detectedCircle.x, y: detectedCircle.y };
-    
-    drawCurrentMap(tileSize, rows, cols);
-    drawLargeMap(tileSize);
+    marker = { row: startRow, col: startCol };
+    autoMapButton.textContent = 'Stop Auto Map';
+    autoMapRunning = true;
+    autoMapInterval = setInterval(() => {
+      // Update grid on every interval.
+      autoMapGrid = createGrid();
+      // Move marker.
+      moveMarker();
+      // Draw mapped feed.
+      drawMappedFeed();
+    }, 500);
   } else {
-    // Even if movement threshold hasn't been met, still update the current view map.
-    if (detectedCircle) {
-      const tileSize = detectedCircle.radius * 2;
-      const cols = Math.floor(cropCanvas.width / tileSize);
-      const rows = Math.floor(cropCanvas.height / tileSize);
-      
-      // Determine current player tile based on white circle center.
-      const currentCol = Math.floor(detectedCircle.x / tileSize);
-      const currentRow = Math.floor(detectedCircle.y / tileSize);
-      if (!playerTile) {
-        playerTile = { row: currentRow, col: currentCol };
-      }
-      drawCurrentMap(tileSize, rows, cols);
-    }
+    clearInterval(autoMapInterval);
+    autoMapInterval = null;
+    autoMapRunning = false;
+    autoMapButton.textContent = 'Start Auto Map';
   }
 }
 
-// Draw current cropped map with grid and marker.
-function drawCurrentMap(tileSize, rows, cols) {
-  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      mapCtx.strokeStyle = '#555';
-      mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
-      // Safely check gridCurrent data.
-      if (gridCurrent[r] && gridCurrent[r][c] !== undefined) {
-        if (gridCurrent[r][c] === 1) {
-          mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
-          mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
-        }
+autoMapButton.addEventListener('click', toggleAutoMap);
+
+// Create grid that reflects the cropped feed.
+// Each cell is 1 for non-empty, 0 for empty (if average brightness < 80).
+function createGrid() {
+  const grid = [];
+  for (let r = 0; r < autoMapRows; r++) {
+    grid[r] = [];
+    for (let c = 0; c < autoMapCols; c++) {
+      // Sample average brightness for each tile.
+      const imageData = cropCtx.getImageData(c * autoMapTileSize, r * autoMapTileSize, autoMapTileSize, autoMapTileSize);
+      let total = 0;
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        total += (data[i] + data[i+1] + data[i+2]) / 3;
+      }
+      const avg = total / (data.length / 4);
+      // If average brightness is less than 80, consider it empty.
+      grid[r][c] = avg < 80 ? 0 : 1;
+    }
+  }
+  return grid;
+}
+
+// Move marker in random valid direction (up, down, left, right) if destination cell is empty.
+function moveMarker() {
+  const directions = [
+    { dr: -1, dc: 0 },
+    { dr: 1, dc: 0 },
+    { dr: 0, dc: -1 },
+    { dr: 0, dc: 1 }
+  ];
+  
+  let moved = false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const dir = directions[Math.floor(Math.random() * directions.length)];
+    const newRow = marker.row + dir.dr;
+    const newCol = marker.col + dir.dc;
+    if (newRow >= 0 && newRow < autoMapRows && newCol >= 0 && newCol < autoMapCols) {
+      if (autoMapGrid[newRow][newCol] === 0) {
+        marker.row = newRow;
+        marker.col = newCol;
+        moved = true;
+        break;
       }
     }
   }
-  
-  // Ensure playerTile exists before drawing the marker.
-  if (!playerTile) return;
-  
-  // Draw red square marker at player's tile.
-  const markerX = playerTile.col * tileSize + tileSize / 2;
-  const markerY = playerTile.row * tileSize + tileSize / 2;
-  const squareSize = detectedCircle.radius;
+  // If unable to move, do nothing.
+}
+
+// Draw the grid map on the mapCanvas, including the red square marker and the white dot representing the player.
+function drawMappedFeed() {
+  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  // Draw grid.
+  for (let r = 0; r < autoMapRows; r++) {
+    for (let c = 0; c < autoMapCols; c++) {
+      mapCtx.strokeStyle = '#555';
+      mapCtx.strokeRect(c * autoMapTileSize, r * autoMapTileSize, autoMapTileSize, autoMapTileSize);
+      if (autoMapGrid[r][c] === 1) {
+        mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
+        mapCtx.fillRect(c * autoMapTileSize, r * autoMapTileSize, autoMapTileSize, autoMapTileSize);
+      }
+    }
+  }
+  // Draw red square marker.
+  const markerX = marker.col * autoMapTileSize + autoMapTileSize / 2;
+  const markerY = marker.row * autoMapTileSize + autoMapTileSize / 2;
+  const squareSize = detectedCircle.radius; // set square side based on circle radius.
   mapCtx.strokeStyle = '#FF0000';
   mapCtx.lineWidth = 2;
   mapCtx.strokeRect(
@@ -360,7 +359,6 @@ function drawCurrentMap(tileSize, rows, cols) {
     squareSize,
     squareSize
   );
-  
   // Draw player's position as a white dot.
   mapCtx.beginPath();
   mapCtx.fillStyle = '#FFFFFF';
@@ -368,61 +366,38 @@ function drawCurrentMap(tileSize, rows, cols) {
   mapCtx.fill();
 }
 
-// Draw full explored map on the large map canvas.
-function drawLargeMap(tileSize) {
-  // Determine bounds from gridAll keys.
-  let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
-  Object.keys(gridAll).forEach(key => {
-    const [r, c] = key.split(',').map(Number);
-    if (r < minRow) minRow = r;
-    if (r > maxRow) maxRow = r;
-    if (c < minCol) minCol = c;
-    if (c > maxCol) maxCol = c;
-  });
-  
-  const totalRows = maxRow - minRow + 1;
-  const totalCols = maxCol - minCol + 1;
-  
-  // Set large map canvas to accommodate full grid (scale factor 20 for visibility).
-  const scale = 20;
-  largeMapCanvas.width = totalCols * scale;
-  largeMapCanvas.height = totalRows * scale;
-  
-  largeMapCtx.clearRect(0, 0, largeMapCanvas.width, largeMapCanvas.height);
-  
-  for (let r = minRow; r <= maxRow; r++) {
-    for (let c = minCol; c <= maxCol; c++) {
-      const key = `${r},${c}`;
-      // Draw cell background.
-      if (gridAll[key] === 1) {
-        largeMapCtx.fillStyle = 'rgba(0,0,0,0.3)';
-      } else {
-        largeMapCtx.fillStyle = '#DDD';
-      }
-      const drawX = (c - minCol) * scale;
-      const drawY = (r - minRow) * scale;
-      largeMapCtx.fillRect(drawX, drawY, scale, scale);
-      largeMapCtx.strokeStyle = '#999';
-      largeMapCtx.strokeRect(drawX, drawY, scale, scale);
-    }
+// Compute percentage of black pixels in a tile.
+// We define a pixel as black if its grayscale value is less than 80.
+function computeBlackPercentage(tileX, tileY, tileSize) {
+  const imageData = cropCtx.getImageData(tileX, tileY, tileSize, tileSize);
+  const data = imageData.data;
+  let darkCount = 0;
+  const total = data.length / 4;
+  for (let i = 0; i < data.length; i += 4) {
+    const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+    if (avg < 80) darkCount++;
   }
-  
-  // Mark player's position on the large map.
-  if (playerTile) {
-    const playerDrawX = (playerTile.col - minCol) * scale + scale / 2;
-    const playerDrawY = (playerTile.row - minRow) * scale + scale / 2;
-    largeMapCtx.beginPath();
-    largeMapCtx.fillStyle = '#FFFFFF';
-    largeMapCtx.arc(playerDrawX, playerDrawY, scale/5, 0, 2 * Math.PI);
-    largeMapCtx.fill();
-  }
+  return ((darkCount / total) * 100).toFixed(2);
 }
 
-// Continuously update auto map every 500ms.
-if (!autoMapInterval) {
-  autoMapInterval = setInterval(() => {
-    if (detectedCircle) {
-      updateAutoMap();
-    }
-  }, 500);
-}
+// Add hover functionality on the mapped feed to show black percentage for each tile.
+mapCanvas.addEventListener('mousemove', (e) => {
+  const rect = mapCanvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  if (autoMapTileSize <= 0) return;
+  const tileCol = Math.floor(mouseX / autoMapTileSize);
+  const tileRow = Math.floor(mouseY / autoMapTileSize);
+  if (tileCol < 0 || tileRow < 0 || tileCol >= autoMapCols || tileRow >= autoMapRows) {
+    tileInfoDiv.textContent = '';
+    return;
+  }
+  const tileX = tileCol * autoMapTileSize;
+  const tileY = tileRow * autoMapTileSize;
+  const blackPercent = computeBlackPercentage(tileX, tileY, autoMapTileSize);
+  tileInfoDiv.textContent = `Tile [${tileRow}, ${tileCol}] Black Percentage: ${blackPercent}%`;
+});
+
+mapCanvas.addEventListener('mouseleave', () => {
+  tileInfoDiv.textContent = '';
+});
