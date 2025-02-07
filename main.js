@@ -272,10 +272,14 @@ function toggleAutoMap() {
     globalMarker = { row: 0, col: 0 };  // Start at origin of full map
     fullMap = {};
     
+    // Initialize the starting position in the full map
+    const startKey = `${globalMarker.row},${globalMarker.col}`;
+    fullMap[startKey] = 0; // Mark starting position as discovered
+
     autoMapButton.textContent = 'Stop Auto Map';
     autoMapRunning = true;
     autoMapInterval = setInterval(() => {
-      previousGrid = [...autoMapGrid.map(row => [...row])];  // Deep copy previous grid
+      previousGrid = JSON.parse(JSON.stringify(autoMapGrid));  // Deep copy previous grid
       previousMarker = { ...marker };  // Store previous marker position
       
       autoMapGrid = createGrid();
@@ -416,7 +420,17 @@ mapCanvas.addEventListener('mouseleave', () => {
 function updateFullMap() {
   if (!globalMarker || !autoMapGrid || !previousGrid) return;
   
-  // For each tile in the current view, update the full map
+  // Calculate movement direction
+  const deltaRow = marker.row - previousMarker.row;
+  const deltaCol = marker.col - previousMarker.col;
+  
+  // Update global marker position based on movement
+  if (deltaRow !== 0 || deltaCol !== 0) {
+    globalMarker.row += deltaRow;
+    globalMarker.col += deltaCol;
+  }
+  
+  // For each visible tile in current view, update the full map
   for (let r = 0; r < autoMapRows; r++) {
     for (let c = 0; c < autoMapCols; c++) {
       // Calculate global coordinates for this tile
@@ -424,8 +438,12 @@ function updateFullMap() {
       const globalCol = globalMarker.col + (c - marker.col);
       const key = `${globalRow},${globalCol}`;
       
-      // If this tile is newly discovered or has changed, update it
-      if (fullMap[key] === undefined || previousGrid[r][c] !== autoMapGrid[r][c]) {
+      // Add tile to full map if:
+      // 1. It's a newly discovered tile
+      // 2. It's different from what we previously knew
+      // 3. It's adjacent to our current position
+      const isAdjacent = Math.abs(r - marker.row) <= 1 && Math.abs(c - marker.col) <= 1;
+      if (isAdjacent || fullMap[key] === undefined) {
         fullMap[key] = autoMapGrid[r][c];
       }
     }
@@ -449,10 +467,11 @@ function drawFullMap() {
   });
   
   // Add padding to the bounds
-  minRow -= 2;
-  maxRow += 2;
-  minCol -= 2;
-  maxCol += 2;
+  const padding = 5;
+  minRow -= padding;
+  maxRow += padding;
+  minCol -= padding;
+  maxCol += padding;
   
   // Set canvas size based on discovered area plus padding
   const width = (maxCol - minCol + 1) * autoMapTileSize;
@@ -464,7 +483,7 @@ function drawFullMap() {
   const ctx = fullMapCanvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
   
-  // Draw grid for all cells (including undiscovered)
+  // Draw the discovered map
   for (let row = minRow; row <= maxRow; row++) {
     for (let col = minCol; col <= maxCol; col++) {
       const x = (col - minCol) * autoMapTileSize;
@@ -474,20 +493,21 @@ function drawFullMap() {
       ctx.strokeStyle = '#333';
       ctx.strokeRect(x, y, autoMapTileSize, autoMapTileSize);
       
-      // Draw discovered tiles
       const key = `${row},${col}`;
       if (fullMap[key] !== undefined) {
+        // Draw discovered tiles
         if (fullMap[key] === 1) {
-          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          // Wall or obstacle
+          ctx.fillStyle = 'rgba(100,100,100,0.8)';
           ctx.fillRect(x, y, autoMapTileSize, autoMapTileSize);
         } else {
-          // Mark discovered empty spaces
-          ctx.fillStyle = 'rgba(100,100,100,0.1)';
+          // Empty space
+          ctx.fillStyle = 'rgba(200,200,200,0.2)';
           ctx.fillRect(x, y, autoMapTileSize, autoMapTileSize);
         }
       } else {
-        // Undiscovered areas
-        ctx.fillStyle = 'rgba(0,0,0,0.05)';
+        // Undiscovered area
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
         ctx.fillRect(x, y, autoMapTileSize, autoMapTileSize);
       }
     }
@@ -498,7 +518,7 @@ function drawFullMap() {
     const x = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
     const y = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
     
-    // Draw a more visible white dot
+    // Draw white dot with glow effect
     ctx.beginPath();
     ctx.fillStyle = '#FFFFFF';
     ctx.strokeStyle = '#000000';
@@ -507,7 +527,7 @@ function drawFullMap() {
     ctx.fill();
     ctx.stroke();
     
-    // Add a subtle glow effect
+    // Add glow effect
     ctx.beginPath();
     const gradient = ctx.createRadialGradient(x, y, 2, x, y, 20);
     gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
