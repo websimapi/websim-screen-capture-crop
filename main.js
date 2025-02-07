@@ -11,7 +11,6 @@ const mapCtx = mapCanvas.getContext('2d');
 const worldMapCanvas = document.getElementById('worldMapCanvas');
 const worldMapCtx = worldMapCanvas.getContext('2d');
 const directionDisplay = document.getElementById('directionDisplay');
-const movementList = document.getElementById('movementList');
 
 let captureStream = null;
 let cropSettings = {
@@ -24,13 +23,10 @@ let cropSettings = {
 let isDragging = false;
 let startX = 0;
 let startY = 0;
-let detectedCircle = null; // store detected white circle info
+let detectedCircle = null; // Store detected white circle info
 
 // Variables for auto mapping.
 let autoMapInterval = null;
-
-// Movement tracking: accumulate movement until threshold reached.
-let movementAccumulator = null;
 
 // For the world map: we maintain an infinite grid using a Map
 // Key: "r,c", value: grid value (0 for empty, 1 for blocked)
@@ -40,8 +36,8 @@ let baseCoordinates = { row: 0, col: 0 };
 
 // Marker (player) state, with absolute grid coordinates.
 let marker = null;
-// We'll store the previous marker position for movement detection.
-let prevMarker = null;
+// We'll store a baseline of the white circle center once a move is confirmed.
+let lastConfirmedCenter = null;
 
 // Setup world map canvas dimensions:
 worldMapCanvas.width = 400;
@@ -240,7 +236,10 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Auto Map function with an infinite grid and eight-direction movement detection.
+// Auto Map function with enhanced movement detection.
+// The algorithm now waits until the center of the detected white circle has moved 
+// a distance equal to its diameter (tile size) before finalizing the movement.
+// Additionally, each final movement direction is appended to a list in the UI.
 function autoMap() {
   if (!detectedCircle) {
     alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
@@ -250,13 +249,12 @@ function autoMap() {
   const tileSize = detectedCircle.radius * 2;
   const cols = Math.floor(cropCanvas.width / tileSize);
   const rows = Math.floor(cropCanvas.height / tileSize);
-  // Build a local grid from crop canvas.
+  // Build a local grid from cropped canvas.
   const grid = [];
   for (let r = 0; r < rows; r++) {
     grid[r] = [];
     for (let c = 0; c < cols; c++) {
       let cellValue = 1; // default blocked
-      // Ensure tile is within bounds.
       if ((c + 1) * tileSize <= cropCanvas.width && (r + 1) * tileSize <= cropCanvas.height) {
         const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
         let total = 0;
@@ -265,24 +263,19 @@ function autoMap() {
           total += (data[i] + data[i+1] + data[i+2]) / 3;
         }
         const avg = total / (data.length / 4);
-        // brightness < 80 means empty.
         cellValue = avg < 80 ? 0 : 1;
       }
       grid[r][c] = cellValue;
     }
   }
 
-  // Determine initial marker if not set.
   if (!marker) {
-    // Set initial marker position based on detected circle in local grid.
+    // Initialize marker position based on detected circle location.
     const startCol = Math.floor(detectedCircle.x / tileSize);
     const startRow = Math.floor(detectedCircle.y / tileSize);
-    // Set absolute coordinates based on current baseCoordinates.
     marker = { row: baseCoordinates.row + startRow, col: baseCoordinates.col + startCol };
-    prevMarker = { ...marker };
-    // Initialize movement accumulator at the center of marker.
-    movementAccumulator = { x: detectedCircle.x, y: detectedCircle.y };
-    // Initialize world map with grid.
+    lastConfirmedCenter = { x: detectedCircle.x, y: detectedCircle.y };
+    // Initialize world map grid entries.
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const absRow = baseCoordinates.row + r;
@@ -291,38 +284,31 @@ function autoMap() {
       }
     }
   } else {
-    // Calculate the distance between the current detected circle center and the accumulator.
-    const dx = detectedCircle.x - movementAccumulator.x;
-    const dy = detectedCircle.y - movementAccumulator.y;
+    // Check if the white circle's center has moved at least one tile (diameter) from the last confirmed position.
+    const dx = detectedCircle.x - lastConfirmedCenter.x;
+    const dy = detectedCircle.y - lastConfirmedCenter.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
-    // Only register movement if the distance exceeds the circle's diameter.
     if (distance >= tileSize) {
-      // Compute new local cell of detected circle.
-      const currentLocalCol = Math.floor(detectedCircle.x / tileSize);
-      const currentLocalRow = Math.floor(detectedCircle.y / tileSize);
-      const newAbsRow = baseCoordinates.row + currentLocalRow;
-      const newAbsCol = baseCoordinates.col + currentLocalCol;
-      // Allowed move if difference in row and col are within [-1,1]
-      const dr = newAbsRow - marker.row;
-      const dc = newAbsCol - marker.col;
-      if (Math.abs(dr) <= 1 && Math.abs(dc) <= 1 && (dr !== 0 || dc !== 0)) {
-        // Update marker position.
-        prevMarker = { ...marker };
-        marker.row = newAbsRow;
-        marker.col = newAbsCol;
-        // Reset the accumulator to the current circle center for the next move.
-        movementAccumulator = { x: detectedCircle.x, y: detectedCircle.y };
-        // Update movement direction display and list.
-        const dir = getDirectionFromDelta(dr, dc);
-        directionDisplay.textContent = `Moved ${dir}`;
+      // Determine the move direction (one of 8 possible).
+      const stepCol = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+      const stepRow = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+      marker.row += stepRow;
+      marker.col += stepCol;
+      const direction = getDirectionFromDelta(stepRow, stepCol);
+      directionDisplay.textContent = `Moved ${direction}`;
+      // Append movement to the history list.
+      const movementList = document.getElementById('movementList');
+      if (movementList) {
         const li = document.createElement('li');
-        li.textContent = `Moved ${dir}`;
-        movementList.prepend(li);
-      } else {
-        directionDisplay.textContent = `No clear movement detected`;
+        li.textContent = direction;
+        movementList.appendChild(li);
       }
+      // Reset the baseline for the next movement detection.
+      lastConfirmedCenter = { x: detectedCircle.x, y: detectedCircle.y };
+    } else {
+      directionDisplay.textContent = `Movement in progress`;
     }
-    // Also update world map data with new grid state.
+    // Update world map data with new grid state.
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const absRow = baseCoordinates.row + r;
@@ -434,6 +420,6 @@ function drawWorldMap() {
 
 autoMapButton.addEventListener('click', () => {
   if (autoMapInterval) clearInterval(autoMapInterval);
-  // Run autoMap every 500ms.
-  autoMapInterval = setInterval(autoMap, 500);
+  // Run autoMap every 100ms for fast movement detection.
+  autoMapInterval = setInterval(autoMap, 100);
 });

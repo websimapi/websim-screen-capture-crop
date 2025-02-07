@@ -83,3 +83,10 @@ button:hover {
   margin-top: 10px;
   text-align: center;
 }
+
+#movementInfo ul {
+  list-style: disc;
+  margin: 10px auto;
+  padding-left: 20px;
+  max-width: 400px;
+}
