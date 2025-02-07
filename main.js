@@ -50,6 +50,17 @@ const zoomInfo = document.getElementById('zoomInfo');
 let previousGrid = null;  // Store the previous frame's grid
 let previousMarker = null;  // Store the previous marker position
 
+// Add new global variables for enhanced mapping
+let discoveredTiles = new Set(); // Keep track of discovered tile coordinates
+let currentTileCoord = null;     // Current tile coordinate
+let previousTileCoord = null;    // Previous tile coordinate
+let mapInfo = {
+  currentTile: null,
+  previousTile: null,
+  newTiles: new Set(),
+  moveDirection: null
+};
+
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
   try {
@@ -263,36 +274,42 @@ function toggleAutoMap() {
     autoMapCols = Math.floor(cropCanvas.width / autoMapTileSize);
     autoMapRows = Math.floor(cropCanvas.height / autoMapTileSize);
     autoMapGrid = createGrid();
-    previousGrid = JSON.parse(JSON.stringify(autoMapGrid));  // Initialize previous grid
+    previousGrid = createGrid();
+    
     const startCol = Math.floor(detectedCircle.x / autoMapTileSize);
     const startRow = Math.floor(detectedCircle.y / autoMapTileSize);
     
     marker = { row: startRow, col: startCol };
-    previousMarker = { ...marker };  // Store initial marker position
-    globalMarker = { row: 0, col: 0 };  // Start at origin of full map
-    fullMap = {};
+    previousMarker = { ...marker };
+    globalMarker = { row: 0, col: 0 };
     
-    // Initialize the starting position and surrounding tiles in the full map
-    for (let r = -1; r <= 1; r++) {
-      for (let c = -1; c <= 1; c++) {
-        const key = `${r},${c}`;
-        if (autoMapGrid[marker.row + r] && autoMapGrid[marker.row + r][marker.col + c] !== undefined) {
-          fullMap[key] = autoMapGrid[marker.row + r][marker.col + c];
-        }
-      }
-    }
+    // Initialize mapping info
+    currentTileCoord = `0,0`;
+    previousTileCoord = currentTileCoord;
+    discoveredTiles.add(currentTileCoord);
+    mapInfo.currentTile = { x: 0, y: 0 };
+    
+    fullMap = {};
+    fullMap[currentTileCoord] = {
+      type: autoMapGrid[marker.row][marker.col],
+      discovered: Date.now()
+    };
 
     autoMapButton.textContent = 'Stop Auto Map';
     autoMapRunning = true;
+    updateMapInfo();
+    
     autoMapInterval = setInterval(() => {
-      previousGrid = JSON.parse(JSON.stringify(autoMapGrid));  // Deep copy previous grid
-      previousMarker = { ...marker };  // Store previous marker position
+      previousGrid = JSON.parse(JSON.stringify(autoMapGrid));
+      previousMarker = { ...marker };
+      previousTileCoord = currentTileCoord;
       
       autoMapGrid = createGrid();
       moveMarker();
       drawMappedFeed();
       updateFullMap();
       drawFullMap();
+      updateMapInfo();
     }, 500);
   } else {
     clearInterval(autoMapInterval);
@@ -326,14 +343,14 @@ function createGrid() {
 // Move marker (allowing up to 8-directional moves) if destination tile is empty.
 function moveMarker() {
   const directions = [
-    { dr: -1, dc: 0 },  // up
-    { dr: 1, dc: 0 },   // down
-    { dr: 0, dc: -1 },  // left
-    { dr: 0, dc: 1 },   // right
-    { dr: -1, dc: -1 }, // up-left
-    { dr: -1, dc: 1 },  // up-right
-    { dr: 1, dc: -1 },  // down-left
-    { dr: 1, dc: 1 }    // down-right
+    { dr: -1, dc: 0, name: 'up' },
+    { dr: 1, dc: 0, name: 'down' },
+    { dr: 0, dc: -1, name: 'left' },
+    { dr: 0, dc: 1, name: 'right' },
+    { dr: -1, dc: -1, name: 'up-left' },
+    { dr: -1, dc: 1, name: 'up-right' },
+    { dr: 1, dc: -1, name: 'down-left' },
+    { dr: 1, dc: 1, name: 'down-right' }
   ];
   
   const shuffled = directions.sort(() => 0.5 - Math.random());
@@ -349,9 +366,28 @@ function moveMarker() {
       marker.row = newRow;
       marker.col = newCol;
       
-      // Update global marker based on movement
-      globalMarker.row += (newRow - previousMarker.row);
-      globalMarker.col += (newCol - previousMarker.col);
+      globalMarker.row += dir.dr;
+      globalMarker.col += dir.dc;
+      
+      currentTileCoord = `${globalMarker.row},${globalMarker.col}`;
+      discoveredTiles.add(currentTileCoord);
+      mapInfo.moveDirection = dir;
+      
+      // Update mapInfo
+      mapInfo.currentTile = { x: globalMarker.row, y: globalMarker.col };
+      mapInfo.newTiles.clear();
+      
+      // Discover adjacent tiles
+      for (let r = -1; r <= 1; r++) {
+        for (let c = -1; c <= 1; c++) {
+          const adjCoord = `${globalMarker.row + r},${globalMarker.col + c}`;
+          if (!discoveredTiles.has(adjCoord)) {
+            mapInfo.newTiles.add(adjCoord);
+            discoveredTiles.add(adjCoord);
+          }
+        }
+      }
+      
       return;
     }
   }
@@ -426,39 +462,32 @@ mapCanvas.addEventListener('mouseleave', () => {
 function updateFullMap() {
   if (!globalMarker || !autoMapGrid || !previousGrid) return;
   
-  // Calculate movement direction
-  const deltaRow = marker.row - previousMarker.row;
-  const deltaCol = marker.col - previousMarker.col;
+  // Record the current tile state
+  fullMap[currentTileCoord] = {
+    type: autoMapGrid[marker.row][marker.col],
+    discovered: Date.now(),
+    visits: (fullMap[currentTileCoord]?.visits || 0) + 1
+  };
   
-  // Update global marker position based on movement
-  globalMarker.row += deltaRow;
-  globalMarker.col += deltaCol;
-  
-  // For each visible tile in current view, update the full map
-  const viewRadius = 2; // How many tiles around the marker to update
-  
-  for (let r = -viewRadius; r <= viewRadius; r++) {
-    for (let c = -viewRadius; c <= viewRadius; c++) {
-      const gridRow = marker.row + r;
-      const gridCol = marker.col + c;
-      
-      // Skip if outside current grid bounds
-      if (gridRow < 0 || gridRow >= autoMapRows || gridCol < 0 || gridCol >= autoMapCols) {
-        continue;
-      }
-      
-      // Calculate global coordinates
+  // Discover and record adjacent tiles
+  for (let r = -1; r <= 1; r++) {
+    for (let c = -1; c <= 1; c++) {
       const globalRow = globalMarker.row + r;
       const globalCol = globalMarker.col + c;
       const key = `${globalRow},${globalCol}`;
       
-      // Update tile in full map if:
-      // 1. It's a newly discovered tile
-      // 2. We're next to the current position (for accuracy)
-      const isNextToMarker = Math.abs(r) <= 1 && Math.abs(c) <= 1;
-      
-      if (fullMap[key] === undefined || isNextToMarker) {
-        fullMap[key] = autoMapGrid[gridRow][gridCol];
+      if (!fullMap[key]) {
+        const localRow = marker.row + r;
+        const localCol = marker.col + c;
+        
+        if (localRow >= 0 && localRow < autoMapRows && 
+            localCol >= 0 && localCol < autoMapCols) {
+          fullMap[key] = {
+            type: autoMapGrid[localRow][localCol],
+            discovered: Date.now(),
+            visits: 0
+          };
+        }
       }
     }
   }
@@ -487,7 +516,7 @@ function drawFullMap() {
   minCol -= padding;
   maxCol += padding;
   
-  // Set canvas size based on discovered area
+  // Set canvas size based on discovered area plus padding
   const width = (maxCol - minCol + 1) * autoMapTileSize;
   const height = (maxRow - minRow + 1) * autoMapTileSize;
   
@@ -510,7 +539,7 @@ function drawFullMap() {
       const key = `${row},${col}`;
       if (fullMap[key] !== undefined) {
         // Draw discovered tiles
-        if (fullMap[key] === 1) {
+        if (fullMap[key].type === 1) {
           // Wall or obstacle
           ctx.fillStyle = 'rgba(100,100,100,0.8)';
           ctx.fillRect(x, y, autoMapTileSize, autoMapTileSize);
@@ -528,28 +557,55 @@ function drawFullMap() {
   }
   
   // Draw current position (white dot)
-  const dotX = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
-  const dotY = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
-  
-  // Draw white dot with glow effect
-  ctx.beginPath();
-  ctx.fillStyle = '#FFFFFF';
-  ctx.strokeStyle = '#000000';
-  ctx.lineWidth = 2;
-  ctx.arc(dotX, dotY, 6, 0, 2 * Math.PI);
-  ctx.fill();
-  ctx.stroke();
-  
-  // Add glow effect
-  ctx.beginPath();
-  const gradient = ctx.createRadialGradient(dotX, dotY, 2, dotX, dotY, 20);
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-  ctx.fillStyle = gradient;
-  ctx.arc(dotX, dotY, 20, 0, 2 * Math.PI);
-  ctx.fill();
+  if (globalMarker) {
+    const x = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
+    const y = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
+    
+    // Draw white dot with glow effect
+    ctx.beginPath();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.arc(x, y, 6, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    
+    // Add glow effect
+    ctx.beginPath();
+    const gradient = ctx.createRadialGradient(x, y, 2, x, y, 20);
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = gradient;
+    ctx.arc(x, y, 20, 0, 2 * Math.PI);
+    ctx.fill();
+  }
   
   updateZoomInfo();
+}
+
+// Add new function to update map information display
+function updateMapInfo() {
+  const mapInfoDiv = document.getElementById('mapInfo') || createMapInfoDiv();
+  const moveDir = mapInfo.moveDirection ? 
+    `${mapInfo.moveDirection.dr},${mapInfo.moveDirection.dc}` : 'None';
+  
+  mapInfoDiv.innerHTML = `
+    <div class="map-info-content">
+      <p>Current Tile: ${currentTileCoord}</p>
+      <p>Previous Tile: ${previousTileCoord}</p>
+      <p>Movement: ${moveDir}</p>
+      <p>New Tiles: ${mapInfo.newTiles.size}</p>
+      <p>Total Discovered: ${discoveredTiles.size}</p>
+    </div>
+  `;
+}
+
+function createMapInfoDiv() {
+  const div = document.createElement('div');
+  div.id = 'mapInfo';
+  div.className = 'map-info';
+  document.getElementById('fullMapSection').appendChild(div);
+  return div;
 }
 
 // Add zoom control functions
