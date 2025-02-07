@@ -335,12 +335,18 @@ function drawCurrentMap(tileSize, rows, cols) {
     for (let c = 0; c < cols; c++) {
       mapCtx.strokeStyle = '#555';
       mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
-      if (gridCurrent[r][c] === 1) {
-        mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
-        mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+      // Safely check gridCurrent data.
+      if (gridCurrent[r] && gridCurrent[r][c] !== undefined) {
+        if (gridCurrent[r][c] === 1) {
+          mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
+          mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+        }
       }
     }
   }
+  
+  // Ensure playerTile exists before drawing the marker.
+  if (!playerTile) return;
   
   // Draw red square marker at player's tile.
   const markerX = playerTile.col * tileSize + tileSize / 2;
