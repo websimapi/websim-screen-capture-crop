@@ -46,6 +46,10 @@ let panOffsetY = 0;
 const fullMapContainer = document.getElementById('fullMapContainer');
 const zoomInfo = document.getElementById('zoomInfo');
 
+// Add these new variables after the other global variables
+let previousGrid = null;  // Store the previous frame's grid
+let previousMarker = null;  // Store the previous marker position
+
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
   try {
@@ -254,29 +258,26 @@ function toggleAutoMap() {
     alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
     return;
   }
-  
   if (!autoMapRunning) {
     autoMapTileSize = detectedCircle.radius * 2;
     autoMapCols = Math.floor(cropCanvas.width / autoMapTileSize);
     autoMapRows = Math.floor(cropCanvas.height / autoMapTileSize);
     autoMapGrid = createGrid();
-    
+    previousGrid = createGrid();  // Initialize previous grid
     const startCol = Math.floor(detectedCircle.x / autoMapTileSize);
     const startRow = Math.floor(detectedCircle.y / autoMapTileSize);
     
     marker = { row: startRow, col: startCol };
-    globalMarker = { row: 0, col: 0 }; // Start at origin
-    fullMap = {}; // Reset full map
+    previousMarker = { ...marker };  // Store initial marker position
+    globalMarker = { row: 0, col: 0 };  // Start at origin of full map
+    fullMap = {};
     
     autoMapButton.textContent = 'Stop Auto Map';
     autoMapRunning = true;
-    
-    // Initial map update
-    updateFullMap();
-    drawFullMap();
-    centerOnMarker();
-    
     autoMapInterval = setInterval(() => {
+      previousGrid = [...autoMapGrid.map(row => [...row])];  // Deep copy previous grid
+      previousMarker = { ...marker };  // Store previous marker position
+      
       autoMapGrid = createGrid();
       moveMarker();
       drawMappedFeed();
@@ -315,33 +316,33 @@ function createGrid() {
 // Move marker (allowing up to 8-directional moves) if destination tile is empty.
 function moveMarker() {
   const directions = [
-    { dr: -1, dc: 0 },
-    { dr: 1, dc: 0 },
-    { dr: 0, dc: -1 },
-    { dr: 0, dc: 1 },
-    { dr: -1, dc: -1 },
-    { dr: -1, dc: 1 },
-    { dr: 1, dc: -1 },
-    { dr: 1, dc: 1 }
+    { dr: -1, dc: 0 },  // up
+    { dr: 1, dc: 0 },   // down
+    { dr: 0, dc: -1 },  // left
+    { dr: 0, dc: 1 },   // right
+    { dr: -1, dc: -1 }, // up-left
+    { dr: -1, dc: 1 },  // up-right
+    { dr: 1, dc: -1 },  // down-left
+    { dr: 1, dc: 1 }    // down-right
   ];
+  
   const shuffled = directions.sort(() => 0.5 - Math.random());
-  const oldMarker = { row: marker.row, col: marker.col };
+  
   for (const dir of shuffled) {
     const newRow = marker.row + dir.dr;
     const newCol = marker.col + dir.dc;
-    if (newRow >= 0 && newRow < autoMapRows && newCol >= 0 && newCol < autoMapCols) {
-      if (autoMapGrid[newRow][newCol] === 0) {
-        marker.row = newRow;
-        marker.col = newCol;
-        // Update global marker using the delta move.
-        if (globalMarker) {
-          globalMarker.row += (newRow - oldMarker.row);
-          globalMarker.col += (newCol - oldMarker.col);
-        } else {
-          globalMarker = { row: newRow, col: newCol };
-        }
-        return;
-      }
+    
+    if (newRow >= 0 && newRow < autoMapRows && 
+        newCol >= 0 && newCol < autoMapCols && 
+        autoMapGrid[newRow][newCol] === 0) {
+      
+      marker.row = newRow;
+      marker.col = newCol;
+      
+      // Update global marker based on movement
+      globalMarker.row += (newRow - previousMarker.row);
+      globalMarker.col += (newCol - previousMarker.col);
+      return;
     }
   }
 }
@@ -413,108 +414,86 @@ mapCanvas.addEventListener('mouseleave', () => {
 
 // Merge the current autoMap grid into the overall full map.
 function updateFullMap() {
-  if (!globalMarker || !autoMapGrid) return;
+  if (!globalMarker || !autoMapGrid || !previousGrid) return;
   
-  // Calculate the global position of the current view's top-left corner
-  const patchOrigin = {
-    row: globalMarker.row - marker.row,
-    col: globalMarker.col - marker.col
-  };
+  // Calculate the movement delta
+  const deltaRow = marker.row - previousMarker.row;
+  const deltaCol = marker.col - previousMarker.col;
   
-  // Add newly discovered tiles to the full map
+  // Get the visible region in global coordinates
   for (let r = 0; r < autoMapRows; r++) {
     for (let c = 0; c < autoMapCols; c++) {
-      const globalRow = patchOrigin.row + r;
-      const globalCol = patchOrigin.col + c;
+      const globalRow = globalMarker.row + (r - marker.row);
+      const globalCol = globalMarker.col + (c - marker.col);
       const key = `${globalRow},${globalCol}`;
       
-      // Only add tiles we're currently seeing and haven't mapped yet
-      if (fullMap[key] === undefined) {
+      // Only update tiles that are newly discovered or changed
+      if (fullMap[key] === undefined || 
+          (previousGrid[r][c] !== autoMapGrid[r][c])) {
         fullMap[key] = autoMapGrid[r][c];
       }
     }
   }
-  
-  // Center the view on the marker when we discover new areas
-  centerOnMarker();
 }
 
 // Render the full map (merged grid) on the fullMapCanvas.
 function drawFullMap() {
-  const keys = Object.keys(fullMap);
-  if (keys.length === 0) return;
+  if (!fullMap || Object.keys(fullMap).length === 0) return;
   
-  // Find the bounds of our discovered map
-  let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
-  keys.forEach(key => {
-    const [r, c] = key.split(',').map(Number);
-    minRow = Math.min(minRow, r);
-    maxRow = Math.max(maxRow, r);
-    minCol = Math.min(minCol, c);
-    maxCol = Math.max(maxCol, c);
+  // Find the bounds of the discovered map
+  let minRow = Infinity, maxRow = -Infinity;
+  let minCol = Infinity, maxCol = -Infinity;
+  
+  Object.keys(fullMap).forEach(key => {
+    const [row, col] = key.split(',').map(Number);
+    minRow = Math.min(minRow, row);
+    maxRow = Math.max(maxRow, row);
+    minCol = Math.min(minCol, col);
+    maxCol = Math.max(maxCol, col);
   });
   
-  const numRows = maxRow - minRow + 1;
-  const numCols = maxCol - minCol + 1;
-  const tileSize = autoMapTileSize;
+  // Set canvas size based on discovered area
+  const width = (maxCol - minCol + 1) * autoMapTileSize;
+  const height = (maxRow - minRow + 1) * autoMapTileSize;
   
-  // Resize canvas to fit the full discovered map
-  fullMapCanvas.width = numCols * tileSize;
-  fullMapCanvas.height = numRows * tileSize;
+  fullMapCanvas.width = width;
+  fullMapCanvas.height = height;
   
   const ctx = fullMapCanvas.getContext('2d');
-  ctx.clearRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
+  ctx.clearRect(0, 0, width, height);
   
-  // Draw the discovered tiles
-  ctx.strokeStyle = '#555';
-  ctx.lineWidth = 1;
-  
-  for (const key of keys) {
-    const [r, c] = key.split(',').map(Number);
-    const tile = fullMap[key];
-    const x = (c - minCol) * tileSize;
-    const y = (r - minRow) * tileSize;
+  // Draw all discovered tiles
+  Object.entries(fullMap).forEach(([key, value]) => {
+    const [row, col] = key.split(',').map(Number);
+    const x = (col - minCol) * autoMapTileSize;
+    const y = (row - minRow) * autoMapTileSize;
     
     // Draw grid cell
-    ctx.strokeRect(x, y, tileSize, tileSize);
+    ctx.strokeStyle = '#555';
+    ctx.strokeRect(x, y, autoMapTileSize, autoMapTileSize);
     
-    // Fill obstacles
-    if (tile === 1) {
+    // Fill walls/obstacles
+    if (value === 1) {
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.fillRect(x, y, tileSize, tileSize);
+      ctx.fillRect(x, y, autoMapTileSize, autoMapTileSize);
     }
-  }
+  });
   
-  // Draw the current position marker (white dot)
+  // Draw current position (white dot)
   if (globalMarker) {
-    const markerX = (globalMarker.col - minCol) * tileSize + tileSize / 2;
-    const markerY = (globalMarker.row - minRow) * tileSize + tileSize / 2;
+    const x = (globalMarker.col - minCol) * autoMapTileSize + autoMapTileSize / 2;
+    const y = (globalMarker.row - minRow) * autoMapTileSize + autoMapTileSize / 2;
     
     ctx.beginPath();
     ctx.fillStyle = '#FFFFFF';
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
-    ctx.arc(markerX, markerY, 6, 0, 2 * Math.PI);
+    ctx.arc(x, y, 6, 0, 2 * Math.PI);
     ctx.fill();
     ctx.stroke();
   }
   
   updateZoomInfo();
-}
-
-// Update the centerOnMarker function to work better with the container
-function centerOnMarker() {
-  if (!globalMarker || !fullMapCanvas) return;
-  
-  const containerRect = fullMapContainer.parentElement.getBoundingClientRect();
-  const markerX = globalMarker.col * autoMapTileSize;
-  const markerY = globalMarker.row * autoMapTileSize;
-  
-  // Center the marker position in the viewport
-  panOffsetX = (containerRect.width / 2) - (markerX * currentZoom);
-  panOffsetY = (containerRect.height / 2) - (markerY * currentZoom);
-  
-  updateMapTransform();
 }
 
 // Add zoom control functions
@@ -580,3 +559,26 @@ fullMapContainer.addEventListener('wheel', (e) => {
     updateMapTransform();
   }
 });
+
+// Function to center the map on the current marker
+function centerOnMarker() {
+  if (!globalMarker || !fullMapCanvas) return;
+  
+  const containerRect = fullMapContainer.parentElement.getBoundingClientRect();
+  const markerX = globalMarker.col * autoMapTileSize;
+  const markerY = globalMarker.row * autoMapTileSize;
+  
+  panOffsetX = (containerRect.width / 2) - (markerX * currentZoom);
+  panOffsetY = (containerRect.height / 2) - (markerY * currentZoom);
+  
+  updateMapTransform();
+}
+
+// Auto-center when starting auto map
+const originalToggleAutoMap = toggleAutoMap;
+toggleAutoMap = function() {
+  originalToggleAutoMap();
+  if (autoMapRunning) {
+    centerOnMarker();
+  }
+};
