@@ -49,11 +49,63 @@ function updateCrop() {
         cropSettings.width,
         cropSettings.height
       );
+      // After drawing the cropped image, attempt to detect a white circle.
+      detectWhiteCircle();
     } catch (e) {
       console.warn('Video not ready for drawing', e);
     }
   }
   requestAnimationFrame(updateCrop);
+}
+
+// Detect a white circle in the cropped canvas and outline it.
+// A simple approach: scan image data to find white-ish pixels, compute bounding box, then draw a circle.
+function detectWhiteCircle() {
+  if (cropCanvas.width === 0 || cropCanvas.height === 0) return;
+  
+  const imageData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+  const data = imageData.data;
+  
+  let minX = cropCanvas.width, minY = cropCanvas.height;
+  let maxX = 0, maxY = 0;
+  let found = false;
+  
+  // Threshold for white: all channels above a certain value.
+  const threshold = 240;
+  
+  for (let y = 0; y < cropCanvas.height; y++) {
+    for (let x = 0; x < cropCanvas.width; x++) {
+      const index = (y * cropCanvas.width + x) * 4;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      const a = data[index + 3];
+      
+      // Check if pixel is almost white
+      if (a > 0 && r >= threshold && g >= threshold && b >= threshold) {
+        found = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  
+  if (found) {
+    // Clear previous overlay drawing by redrawing the image before drawing the outline.
+    // Get center and approximate radius.
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const radius = Math.max((maxX - minX), (maxY - minY)) / 2;
+    
+    // Draw a green circle outlining the detected white area.
+    cropCtx.beginPath();
+    cropCtx.lineWidth = 3;
+    cropCtx.strokeStyle = '#00FF00';
+    cropCtx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    cropCtx.stroke();
+  }
 }
 
 // Get the offset of the videoContainer relative to the page.
