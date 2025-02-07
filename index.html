@@ -1,12 +1,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Screen Capture & Crop with White Circle Detection & Auto Map</title>
+  <title>Screen Capture, Crop & Live Mapping</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header>
-    <h1>Screen Capture & Crop with White Circle Detection & Auto Map</h1>
+    <h1>Screen Capture, Crop, White Circle Detection & Live Mapping</h1>
   </header>
   <main>
     <section id="capture-section">
@@ -25,6 +25,11 @@
     <section id="map-output">
       <h2>Mapped Feed</h2>
       <canvas id="mapCanvas"></canvas>
+    </section>
+    <section id="persistent-map">
+      <h2>Persistent Live Map</h2>
+      <button id="liveMapButton">Start Live Map</button>
+      <canvas id="persistentMapCanvas"></canvas>
     </section>
   </main>
   <script type="module" src="main.js"></script>

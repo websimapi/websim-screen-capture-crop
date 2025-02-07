@@ -1,5 +1,7 @@
+// Global DOM Elements
 const startCaptureButton = document.getElementById('startCaptureButton');
 const autoMapButton = document.getElementById('autoMapButton');
+const liveMapButton = document.getElementById('liveMapButton');
 const screenVideo = document.getElementById('screenVideo');
 const cropCanvas = document.getElementById('cropCanvas');
 const cropCtx = cropCanvas.getContext('2d');
@@ -7,6 +9,8 @@ const videoContainer = document.getElementById('videoContainer');
 const cropOverlay = document.getElementById('cropOverlay');
 const mapCanvas = document.getElementById('mapCanvas');
 const mapCtx = mapCanvas.getContext('2d');
+const persistentMapCanvas = document.getElementById('persistentMapCanvas');
+const persistentMapCtx = persistentMapCanvas.getContext('2d');
 
 let captureStream = null;
 let cropSettings = {
@@ -20,6 +24,12 @@ let isDragging = false;
 let startX = 0;
 let startY = 0;
 let detectedCircle = null; // store detected white circle info
+
+// Global variables for live mapping
+let liveMapping = false;
+let liveMapInterval = null;
+let globalMarker = null; // current marker position from autoMap
+let initialGlobalPosition = null;  // initial position for persistent mapping
 
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
@@ -73,15 +83,10 @@ function detectWhiteCircle() {
   const width = cropCanvas.width;
   const height = cropCanvas.height;
   
-  // Create a visited array for flood fill.
   const visited = new Uint8Array(width * height);
-  
-  // Threshold value for considering a pixel white.
   const threshold = 240;
-  
   let bestRegion = null;
   
-  // Helper: perform flood fill to get connected white region.
   function floodFill(x, y) {
     const stack = [[x, y]];
     let minX = x, minY = y, maxX = x, maxY = y;
@@ -107,7 +112,6 @@ function detectWhiteCircle() {
       if (cx > maxX) maxX = cx;
       if (cy > maxY) maxY = cy;
       
-      // Check neighbors.
       if (cx > 0) stack.push([cx - 1, cy]);
       if (cx < width - 1) stack.push([cx + 1, cy]);
       if (cy > 0) stack.push([cx, cy - 1]);
@@ -117,7 +121,6 @@ function detectWhiteCircle() {
     return { minX, minY, maxX, maxY, pixelCount };
   }
   
-  // Loop through pixels and apply flood fill for white areas.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -131,7 +134,6 @@ function detectWhiteCircle() {
       
       if (a > 0 && r >= threshold && g >= threshold && b >= threshold) {
         const region = floodFill(x, y);
-        // Consider region only if it's of a reasonable size.
         if (region.pixelCount > 50) {
           if (!bestRegion || region.pixelCount > bestRegion.pixelCount) {
             bestRegion = region;
@@ -141,18 +143,15 @@ function detectWhiteCircle() {
     }
   }
   
-  // If found a best region, draw a circle:
   if (bestRegion) {
     const centerX = (bestRegion.minX + bestRegion.maxX) / 2;
     const centerY = (bestRegion.minY + bestRegion.maxY) / 2;
     const radius = Math.max(bestRegion.maxX - bestRegion.minX, bestRegion.maxY - bestRegion.minY) / 2;
     
-    // Store detected circle for auto mapping.
     detectedCircle = { x: centerX, y: centerY, radius };
     
-    // Clear any previous overlay by redrawing the image data.
+    // Redraw the current crop image to clear previously drawn overlays.
     cropCtx.putImageData(imageData, 0, 0);
-    
     cropCtx.beginPath();
     cropCtx.lineWidth = 3;
     cropCtx.strokeStyle = '#00FF00';
@@ -236,66 +235,38 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Auto Map functionality
-// This function will analyze the cropped feed, and use the detected white circle's diameter as a tile size.
-// Then it will "move" a marker algorithmically around the feed. It simulates checking adjacent tiles,
-// where a tile is considered empty if its average color is dark.
+// Auto Map functionality.
+// This function analyzes the cropped feed, uses the detected white circle as a reference,
+// and then simulates marker movement on a grid mapped based on the circle's diameter.
 function autoMap() {
   if (!detectedCircle) {
     alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
     return;
   }
   
-  // Set tile size as circle's diameter.
   const tileSize = detectedCircle.radius * 2;
   const cols = Math.floor(cropCanvas.width / tileSize);
   const rows = Math.floor(cropCanvas.height / tileSize);
   
-  // Create a grid for mapping.
+  // Create grid with brightness sampling.
   const grid = [];
   for (let r = 0; r < rows; r++) {
     grid[r] = [];
     for (let c = 0; c < cols; c++) {
-      // Sample average brightness for each tile.
       const imageData = cropCtx.getImageData(c * tileSize, r * tileSize, tileSize, tileSize);
       let total = 0;
       const data = imageData.data;
-      for (let i = 0; i < data.length; i+=4) {
-        // Grayscale value.
+      for (let i = 0; i < data.length; i += 4) {
         total += (data[i] + data[i+1] + data[i+2]) / 3;
       }
       const avg = total / (data.length / 4);
-      // If average brightness is less than 80, consider it empty.
       grid[r][c] = avg < 80 ? 0 : 1;
     }
   }
   
-  // Draw the grid map on the mapCanvas
-  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  mapCtx.strokeStyle = '#555';
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      mapCtx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
-      // Mark filled tiles.
-      if (grid[r][c] === 1) {
-        mapCtx.fillStyle = 'rgba(0,0,0,0.3)';
-        mapCtx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
-      }
-    }
-  }
-  
-  // Starting position: find the tile containing the white circle center.
-  const startCol = Math.floor(detectedCircle.x / tileSize);
-  const startRow = Math.floor(detectedCircle.y / tileSize);
-  
-  // Marker object to animate.
-  let marker = { row: startRow, col: startCol };
-  
-  // Draw initial marker.
-  function drawMarker() {
-    // Clear previous marker overlay.
+  // Draw the initial grid map.
+  function drawGrid() {
     mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-    // Redraw grid.
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         mapCtx.strokeStyle = '#555';
@@ -306,7 +277,21 @@ function autoMap() {
         }
       }
     }
-    // Draw marker circle.
+  }
+  
+  // Marker object to animate.
+  let marker = { row: 0, col: 0 };
+  // Determine starting marker tile.
+  marker.col = Math.floor(detectedCircle.x / tileSize);
+  marker.row = Math.floor(detectedCircle.y / tileSize);
+  // Set global marker for persistent mapping.
+  globalMarker = { ...marker };
+  // Record the initial marker position for offset calculations.
+  initialGlobalPosition = { ...marker };
+  
+  // Draw marker on the mapped feed.
+  function drawMarker() {
+    drawGrid();
     mapCtx.beginPath();
     mapCtx.lineWidth = 2;
     mapCtx.strokeStyle = '#FF0000';
@@ -318,7 +303,6 @@ function autoMap() {
   
   drawMarker();
   
-  // Simple algorithm: move marker in random direction among up, down, left, right if the tile is empty.
   const directions = [
     { dr: -1, dc: 0 },
     { dr: 1, dc: 0 },
@@ -326,15 +310,14 @@ function autoMap() {
     { dr: 0, dc: 1 }
   ];
   
+  // Animate marker movement.
   const interval = setInterval(() => {
     let moved = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       const dir = directions[Math.floor(Math.random() * directions.length)];
       const newRow = marker.row + dir.dr;
       const newCol = marker.col + dir.dc;
-      // Check boundaries.
       if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols) {
-        // Only move if the destination tile is empty.
         if (grid[newRow][newCol] === 0) {
           marker.row = newRow;
           marker.col = newCol;
@@ -344,11 +327,76 @@ function autoMap() {
       }
     }
     if (!moved) {
-      // If unable to move, stop the animation.
       clearInterval(interval);
+      if (liveMapping) {
+        stopLiveMapping();
+      }
     }
+    globalMarker = { ...marker };
     drawMarker();
-  }, 500); // Move every 500ms.
+  }, 500);
+}
+
+// Live Map functionality.
+// This will keep a persistent mapping of the user's traveled path.
+// It uses the global marker position from autoMap and maps it on a persistent canvas.
+function startLiveMapping() {
+  if (!globalMarker || !initialGlobalPosition) {
+    alert("Please run Auto Map first to establish a reference point.");
+    return;
+  }
+  liveMapping = true;
+  // Set persistent map canvas size to a larger area.
+  persistentMapCanvas.width = cropCanvas.width * 2;
+  persistentMapCanvas.height = cropCanvas.height * 2;
+  // Fill background.
+  persistentMapCtx.fillStyle = '#eee';
+  persistentMapCtx.fillRect(0, 0, persistentMapCanvas.width, persistentMapCanvas.height);
+  // Draw initial marker on persistent map at center.
+  const centerX = persistentMapCanvas.width / 2;
+  const centerY = persistentMapCanvas.height / 2;
+  // Store the last drawn persistent position.
+  let lastPersistentPos = { x: centerX, y: centerY };
+  
+  liveMapInterval = setInterval(() => {
+    // Calculate offset relative to initialGlobalPosition.
+    const deltaCol = globalMarker.col - initialGlobalPosition.col;
+    const deltaRow = globalMarker.row - initialGlobalPosition.row;
+    // Assume each tile in persistent map is scaled similarly.
+    const tileSize = detectedCircle.radius * 2;
+    const persistentX = centerX + deltaCol * tileSize;
+    const persistentY = centerY + deltaRow * tileSize;
+    
+    // Draw a line from the last position to the new position.
+    persistentMapCtx.beginPath();
+    persistentMapCtx.strokeStyle = '#FF0000';
+    persistentMapCtx.lineWidth = 3;
+    persistentMapCtx.moveTo(lastPersistentPos.x, lastPersistentPos.y);
+    persistentMapCtx.lineTo(persistentX, persistentY);
+    persistentMapCtx.stroke();
+    
+    // Draw the marker.
+    persistentMapCtx.beginPath();
+    persistentMapCtx.arc(persistentX, persistentY, detectedCircle.radius / 2, 0, 2 * Math.PI);
+    persistentMapCtx.fillStyle = '#00F';
+    persistentMapCtx.fill();
+    
+    lastPersistentPos = { x: persistentX, y: persistentY };
+  }, 500);
+}
+
+function stopLiveMapping() {
+  liveMapping = false;
+  clearInterval(liveMapInterval);
 }
 
 autoMapButton.addEventListener('click', autoMap);
+liveMapButton.addEventListener('click', () => {
+  if (!liveMapping) {
+    startLiveMapping();
+    liveMapButton.textContent = "Stop Live Map";
+  } else {
+    stopLiveMapping();
+    liveMapButton.textContent = "Start Live Map";
+  }
+});
