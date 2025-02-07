@@ -286,22 +286,26 @@ function toggleAutoMap() {
 autoMapButton.addEventListener('click', toggleAutoMap);
 
 // Create grid that reflects the cropped feed.
-// Each cell is 1 for non-empty, 0 for empty (if average brightness < 80).
+// Each cell is 1 if tile is considered non-empty, 0 if the tile is mostly black.
+// A tile is considered empty (0) if more than 19% of its pixels are black,
+// where a pixel is deemed black if its grayscale value is less than 80.
 function createGrid() {
   const grid = [];
   for (let r = 0; r < autoMapRows; r++) {
     grid[r] = [];
     for (let c = 0; c < autoMapCols; c++) {
-      // Sample average brightness for each tile.
+      // Sample pixel data for each tile.
       const imageData = cropCtx.getImageData(c * autoMapTileSize, r * autoMapTileSize, autoMapTileSize, autoMapTileSize);
-      let total = 0;
       const data = imageData.data;
+      let darkCount = 0;
+      const totalPixels = data.length / 4;
       for (let i = 0; i < data.length; i += 4) {
-        total += (data[i] + data[i+1] + data[i+2]) / 3;
+        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+        if (avg < 80) darkCount++;
       }
-      const avg = total / (data.length / 4);
-      // If average brightness is less than 80, consider it empty.
-      grid[r][c] = avg < 80 ? 0 : 1;
+      const blackPercentage = (darkCount / totalPixels) * 100;
+      // If more than 19% black, consider it an empty tile.
+      grid[r][c] = blackPercentage > 19 ? 0 : 1;
     }
   }
   return grid;
