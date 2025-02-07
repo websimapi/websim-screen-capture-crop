@@ -407,16 +407,21 @@ mapCanvas.addEventListener('mouseleave', () => {
 // Merge the current autoMap grid into the overall full map.
 function updateFullMap() {
   if (!globalMarker || !autoMapGrid) return;
-  // Calculate patch origin so that the local marker maps to the global marker.
+  
+  // Calculate patch origin so that the local marker maps to the global marker
   const patchOrigin = {
     row: globalMarker.row - marker.row,
     col: globalMarker.col - marker.col
   };
+  
+  // Only add tiles that we can see from our current position
   for (let r = 0; r < autoMapRows; r++) {
     for (let c = 0; c < autoMapCols; c++) {
       const globalRow = patchOrigin.row + r;
       const globalCol = patchOrigin.col + c;
-      const key = globalRow + ',' + globalCol;
+      const key = `${globalRow},${globalCol}`;
+      
+      // Only add new tiles we discover
       if (fullMap[key] === undefined) {
         fullMap[key] = autoMapGrid[r][c];
       }
@@ -448,44 +453,40 @@ function drawFullMap() {
   const ctx = fullMapCanvas.getContext('2d');
   ctx.clearRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
   
-  // Draw background grid
-  ctx.fillStyle = '#f0f0f0';
-  ctx.fillRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
-  
-  // Draw tiles
+  // Draw discovered tiles
   for (let r = minRow; r <= maxRow; r++) {
     for (let c = minCol; c <= maxCol; c++) {
-      const key = r + ',' + c;
+      const key = `${r},${c}`;
       const tile = fullMap[key];
       const x = (c - minCol) * tileSize;
       const y = (r - minRow) * tileSize;
       
-      ctx.strokeStyle = '#555';
-      ctx.strokeRect(x, y, tileSize, tileSize);
-      
-      if (tile === 1) {
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.fillRect(x, y, tileSize, tileSize);
+      // Draw grid for discovered tiles
+      if (tile !== undefined) {
+        ctx.strokeStyle = '#555';
+        ctx.strokeRect(x, y, tileSize, tileSize);
+        
+        if (tile === 1) {
+          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          ctx.fillRect(x, y, tileSize, tileSize);
+        }
       }
     }
   }
   
-  // Draw global marker
+  // Draw white dot (current position)
   if (globalMarker) {
-    const globalX = (globalMarker.col - minCol) * tileSize + tileSize / 2;
-    const globalY = (globalMarker.row - minRow) * tileSize + tileSize / 2;
+    const markerX = (globalMarker.col - minCol) * tileSize + tileSize / 2;
+    const markerY = (globalMarker.row - minRow) * tileSize + tileSize / 2;
     
-    // Draw highlight around current position
+    // Draw white dot
     ctx.beginPath();
-    ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
-    ctx.arc(globalX, globalY, tileSize, 0, 2 * Math.PI);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.arc(markerX, markerY, 6, 0, 2 * Math.PI);
     ctx.fill();
-    
-    // Draw marker
-    ctx.beginPath();
-    ctx.fillStyle = '#FF0000';
-    ctx.arc(globalX, globalY, 6, 0, 2 * Math.PI);
-    ctx.fill();
+    ctx.stroke();
   }
   
   updateZoomInfo();
