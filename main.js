@@ -26,11 +26,14 @@ let detectedCircle = null; // store detected white circle info
 
 // Variables for the auto mapping algorithm.
 let autoMapInterval = null;
-let prevMarker = null; // previous marker position on mapping grid
 
-// World map state:
-let worldPlayerPos = { r: 0, c: 0 }; // relative coordinates in our "world"
-const worldMapData = {}; // keys in form "r,c", value true if visited
+// For the world map: we will continuously re-check the entire grid
+// and update a cumulative world map based on changes detected in the crop feed.
+let worldMapData = {}; // key: "r,c", value: grid value (0 for empty, 1 for blocked)
+let prevGrid = null; // previous snapshot of grid mapping
+
+// Marker state for mapped feed:
+let marker = null; // will be initialized on autoMap start
 
 // Setup world map canvas dimensions:
 worldMapCanvas.width = 400;
@@ -251,11 +254,7 @@ startCaptureButton.addEventListener('click', () => {
   startCapture();
 });
 
-// Enhanced Auto Map Section
-// This function continuously maps the cropped feed.
-// It uses the detected white circle as the starting point for a grid,
-// and then moves a red square marker around if the tile is "empty" (dark).
-// Additionally, it detects the direction the white dot (player) moves and updates a full live world map below.
+// Enhanced Auto Map Section with improved live world map logic
 function autoMap() {
   if (!detectedCircle) {
     alert("White circle not detected. Please ensure the white circle is visible in the cropped output.");
@@ -267,7 +266,7 @@ function autoMap() {
   const cols = Math.floor(cropCanvas.width / tileSize);
   const rows = Math.floor(cropCanvas.height / tileSize);
   
-  // Create a grid for mapping.
+  // Compute the grid from the current crop canvas.
   const grid = [];
   for (let r = 0; r < rows; r++) {
     grid[r] = [];
@@ -277,13 +276,40 @@ function autoMap() {
       let total = 0;
       const data = imageData.data;
       for (let i = 0; i < data.length; i += 4) {
-        // Grayscale value.
         total += (data[i] + data[i+1] + data[i+2]) / 3;
       }
       const avg = total / (data.length / 4);
-      // If average brightness is less than 80, consider it empty.
+      // If average brightness is less than 80, consider it empty (0), else blocked (1).
       grid[r][c] = avg < 80 ? 0 : 1;
     }
+  }
+  
+  // If this is the first time, initialize the marker at the grid cell containing the detected white circle.
+  if (!marker) {
+    const startCol = Math.floor(detectedCircle.x / tileSize);
+    const startRow = Math.floor(detectedCircle.y / tileSize);
+    marker = { row: startRow, col: startCol };
+    // Initialize the world map data with the entire current grid.
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const key = `${r},${c}`;
+        worldMapData[key] = grid[r][c];
+      }
+    }
+    // Store a snapshot for later diff comparisons.
+    prevGrid = grid.map(row => [...row]);
+  } else {
+    // Compare current grid with previous snapshot and update world map if changes are detected.
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (!prevGrid || grid[r][c] !== prevGrid[r][c]) {
+          const key = `${r},${c}`;
+          worldMapData[key] = grid[r][c];
+        }
+      }
+    }
+    // Deep clone current grid as the new previous snapshot.
+    prevGrid = grid.map(row => [...row]);
   }
   
   // Draw the grid map on the mapCanvas.
@@ -301,27 +327,12 @@ function autoMap() {
     }
   }
   
-  // Starting grid position: tile that contains the white circle center.
-  const startCol = Math.floor(detectedCircle.x / tileSize);
-  const startRow = Math.floor(detectedCircle.y / tileSize);
-  
-  // Initialize marker on the mapped grid.
-  let marker = { row: startRow, col: startCol };
-  // For world mapping, initialize player world position if not already set.
-  if (prevMarker === null) {
-    prevMarker = { ...marker };
-    worldPlayerPos = { r: 0, c: 0 }; // starting at origin on world map.
-    markWorldCell(worldPlayerPos.r, worldPlayerPos.c);
-  }
-
-  // Draw the grid, red square marker, and player white dot.
+  // Draw marker as a red square and the player's position as a white dot.
   function drawMarker() {
     drawGrid();
-    // Calculate marker center coordinates.
     const markerX = marker.col * tileSize + tileSize / 2;
     const markerY = marker.row * tileSize + tileSize / 2;
-    // Draw red square marker.
-    const squareSize = detectedCircle.radius; // square side based on circle radius.
+    const squareSize = detectedCircle.radius;
     mapCtx.strokeStyle = '#FF0000';
     mapCtx.lineWidth = 2;
     mapCtx.strokeRect(
@@ -330,108 +341,89 @@ function autoMap() {
       squareSize,
       squareSize
     );
-    // Draw player's position as a white dot.
     mapCtx.beginPath();
     mapCtx.fillStyle = '#FFFFFF';
     mapCtx.arc(markerX, markerY, 4, 0, 2 * Math.PI);
     mapCtx.fill();
   }
   
-  // --- World Map Functions ---
-  // Mark a cell in the world map as visited.
-  function markWorldCell(r, c) {
-    const key = `${r},${c}`;
-    worldMapData[key] = true;
-  }
-
-  // Draw the live world map based on visited world cells and current player position.
-  function drawWorldMap() {
-    worldMapCtx.clearRect(0, 0, worldMapCanvas.width, worldMapCanvas.height);
-    // Determine extents of visited cells.
-    let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
-    Object.keys(worldMapData).forEach(key => {
-      const [r, c] = key.split(',').map(Number);
-      if (r < minR) minR = r;
-      if (r > maxR) maxR = r;
-      if (c < minC) minC = c;
-      if (c > maxC) maxC = c;
-    });
-    // Ensure current player pos is included.
-    minR = Math.min(minR, worldPlayerPos.r);
-    maxR = Math.max(maxR, worldPlayerPos.r);
-    minC = Math.min(minC, worldPlayerPos.c);
-    maxC = Math.max(maxC, worldPlayerPos.c);
-    
-    const gridRows = maxR - minR + 1;
-    const gridCols = maxC - minC + 1;
-    const cellSize = Math.min(worldMapCanvas.width / gridCols, worldMapCanvas.height / gridRows);
-    
-    // Draw visited cells.
-    Object.keys(worldMapData).forEach(key => {
-      const [r, c] = key.split(',').map(Number);
-      const drawR = r - minR;
-      const drawC = c - minC;
-      worldMapCtx.fillStyle = '#cccccc';
-      worldMapCtx.fillRect(drawC * cellSize, drawR * cellSize, cellSize, cellSize);
-      worldMapCtx.strokeStyle = '#999';
-      worldMapCtx.strokeRect(drawC * cellSize, drawR * cellSize, cellSize, cellSize);
-    });
-    
-    // Draw current player's cell.
-    const playerDrawR = worldPlayerPos.r - minR;
-    const playerDrawC = worldPlayerPos.c - minC;
-    worldMapCtx.fillStyle = '#FFFFFF';
-    worldMapCtx.beginPath();
-    worldMapCtx.arc(playerDrawC * cellSize + cellSize/2, playerDrawR * cellSize + cellSize/2, cellSize/4, 0, 2 * Math.PI);
-    worldMapCtx.fill();
-  }
-  
-  // Simple algorithm: move marker randomly among up, down, left, right if destination tile is empty.
+  // Attempt to move the marker to an adjacent empty tile.
   const directions = [
     { dr: -1, dc: 0 },
     { dr: 1, dc: 0 },
     { dr: 0, dc: -1 },
     { dr: 0, dc: 1 }
   ];
-  
-  // Movement loop: runs continuously every 500ms.
-  autoMapInterval = setInterval(() => {
-    let moved = false;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const dir = directions[Math.floor(Math.random() * directions.length)];
-      const newRow = marker.row + dir.dr;
-      const newCol = marker.col + dir.dc;
-      // Check boundaries within the grid.
-      if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols) {
-        // Only move if the destination tile is empty.
-        if (grid[newRow][newCol] === 0) {
-          // Detect movement direction from previous marker position.
-          const deltaRow = newRow - marker.row;
-          const deltaCol = newCol - marker.col;
-          // Update marker position.
-          marker.row = newRow;
-          marker.col = newCol;
-          moved = true;
-          // Update world map: interpret marker movement into world coordinates.
-          // For simplicity, assume each valid move translates to a 1-unit move in world map.
-          worldPlayerPos.r += deltaRow;
-          worldPlayerPos.c += deltaCol;
-          markWorldCell(worldPlayerPos.r, worldPlayerPos.c);
-          break;
-        }
-      }
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const dir = directions[Math.floor(Math.random() * directions.length)];
+    const newRow = marker.row + dir.dr;
+    const newCol = marker.col + dir.dc;
+    if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols && grid[newRow][newCol] === 0) {
+      marker.row = newRow;
+      marker.col = newCol;
+      // Update world map data for the marker's new position.
+      const key = `${newRow},${newCol}`;
+      worldMapData[key] = grid[newRow][newCol];
+      break;
     }
-    
-    // Redraw mapped feed marker and world map.
-    drawMarker();
-    drawWorldMap();
-    
-    // If no valid move was found, you may choose to stop the interval.
-    // For a continuously updating mapping, we leave it running.
-    
-    // Update previous marker position.
-    prevMarker = { ...marker };
-  }, 500);
+  }
+  
+  drawMarker();
+  drawWorldMap();
 }
 
-autoMapButton.addEventListener('click', autoMap);
+// Draw world map by checking all collected worldMapData tiles.
+function drawWorldMap() {
+  worldMapCtx.clearRect(0, 0, worldMapCanvas.width, worldMapCanvas.height);
+  
+  // Determine grid extents from collected keys.
+  let minR = Infinity, minC = Infinity, maxR = -Infinity, maxC = -Infinity;
+  Object.keys(worldMapData).forEach(key => {
+    const [r, c] = key.split(',').map(Number);
+    if (r < minR) minR = r;
+    if (r > maxR) maxR = r;
+    if (c < minC) minC = c;
+    if (c > maxC) maxC = c;
+  });
+  
+  // Ensure the marker's current cell is included.
+  minR = Math.min(minR, marker.row);
+  maxR = Math.max(maxR, marker.row);
+  minC = Math.min(minC, marker.col);
+  maxC = Math.max(maxC, marker.col);
+  
+  const gridRows = maxR - minR + 1;
+  const gridCols = maxC - minC + 1;
+  const cellSize = Math.min(worldMapCanvas.width / gridCols, worldMapCanvas.height / gridRows);
+  
+  // Draw visited cells based on worldMapData.
+  Object.keys(worldMapData).forEach(key => {
+    const [r, c] = key.split(',').map(Number);
+    const drawR = r - minR;
+    const drawC = c - minC;
+    if (worldMapData[key] === 0) {
+      // Empty tile (visited)
+      worldMapCtx.fillStyle = '#cccccc';
+    } else {
+      // Blocked tile
+      worldMapCtx.fillStyle = '#555555';
+    }
+    worldMapCtx.fillRect(drawC * cellSize, drawR * cellSize, cellSize, cellSize);
+    worldMapCtx.strokeStyle = '#999';
+    worldMapCtx.strokeRect(drawC * cellSize, drawR * cellSize, cellSize, cellSize);
+  });
+  
+  // Mark the player's current position (marker).
+  const playerDrawR = marker.row - minR;
+  const playerDrawC = marker.col - minC;
+  worldMapCtx.fillStyle = '#FFFFFF';
+  worldMapCtx.beginPath();
+  worldMapCtx.arc(playerDrawC * cellSize + cellSize/2, playerDrawR * cellSize + cellSize/2, cellSize/4, 0, 2 * Math.PI);
+  worldMapCtx.fill();
+}
+
+autoMapButton.addEventListener('click', () => {
+  // Clear any existing interval to avoid duplicates.
+  if (autoMapInterval) clearInterval(autoMapInterval);
+  autoMapInterval = setInterval(autoMap, 500);
+});
