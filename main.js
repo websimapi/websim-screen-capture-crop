@@ -36,6 +36,16 @@ let marker = null;  // marker position {row, col}
 let globalMarker = null; // global position of the white dot (in tile units)
 let fullMap = {};        // object to store merged tile data, key: "row,col"
 
+// Add new global variables at the top
+let currentZoom = 1;
+let isPanning = false;
+let startPanX = 0;
+let startPanY = 0;
+let panOffsetX = 0;
+let panOffsetY = 0;
+const fullMapContainer = document.getElementById('fullMapContainer');
+const zoomInfo = document.getElementById('zoomInfo');
+
 // Start screen capture using getDisplayMedia.
 async function startCapture() {
   try {
@@ -418,6 +428,7 @@ function updateFullMap() {
 function drawFullMap() {
   const keys = Object.keys(fullMap);
   if (keys.length === 0) return;
+  
   let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
   keys.forEach(key => {
     const [r, c] = key.split(',').map(Number);
@@ -426,33 +437,143 @@ function drawFullMap() {
     minCol = Math.min(minCol, c);
     maxCol = Math.max(maxCol, c);
   });
+  
   const numRows = maxRow - minRow + 1;
   const numCols = maxCol - minCol + 1;
   const tileSize = autoMapTileSize;
+  
   fullMapCanvas.width = numCols * tileSize;
   fullMapCanvas.height = numRows * tileSize;
+  
   const ctx = fullMapCanvas.getContext('2d');
   ctx.clearRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
+  
+  // Draw background grid
+  ctx.fillStyle = '#f0f0f0';
+  ctx.fillRect(0, 0, fullMapCanvas.width, fullMapCanvas.height);
+  
+  // Draw tiles
   for (let r = minRow; r <= maxRow; r++) {
     for (let c = minCol; c <= maxCol; c++) {
       const key = r + ',' + c;
       const tile = fullMap[key];
       const x = (c - minCol) * tileSize;
       const y = (r - minRow) * tileSize;
+      
       ctx.strokeStyle = '#555';
       ctx.strokeRect(x, y, tileSize, tileSize);
+      
       if (tile === 1) {
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         ctx.fillRect(x, y, tileSize, tileSize);
       }
     }
   }
+  
+  // Draw global marker
   if (globalMarker) {
     const globalX = (globalMarker.col - minCol) * tileSize + tileSize / 2;
     const globalY = (globalMarker.row - minRow) * tileSize + tileSize / 2;
+    
+    // Draw highlight around current position
     ctx.beginPath();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.arc(globalX, globalY, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+    ctx.arc(globalX, globalY, tileSize, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // Draw marker
+    ctx.beginPath();
+    ctx.fillStyle = '#FF0000';
+    ctx.arc(globalX, globalY, 6, 0, 2 * Math.PI);
     ctx.fill();
   }
+  
+  updateZoomInfo();
 }
+
+// Add zoom control functions
+function zoomIn() {
+  currentZoom = Math.min(currentZoom * 1.2, 5);
+  updateMapTransform();
+}
+
+function zoomOut() {
+  currentZoom = Math.max(currentZoom / 1.2, 0.2);
+  updateMapTransform();
+}
+
+function updateMapTransform() {
+  fullMapContainer.style.transform = `translate(${panOffsetX}px, ${panOffsetY}px) scale(${currentZoom})`;
+  updateZoomInfo();
+}
+
+function updateZoomInfo() {
+  zoomInfo.textContent = `Zoom: ${(currentZoom * 100).toFixed(0)}%`;
+}
+
+// Add pan event listeners
+fullMapContainer.addEventListener('mousedown', (e) => {
+  if (e.button === 0) { // Left click only
+    isPanning = true;
+    startPanX = e.clientX - panOffsetX;
+    startPanY = e.clientY - panOffsetY;
+    fullMapContainer.style.cursor = 'grabbing';
+  }
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (isPanning) {
+    panOffsetX = e.clientX - startPanX;
+    panOffsetY = e.clientY - startPanY;
+    updateMapTransform();
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  isPanning = false;
+  fullMapContainer.style.cursor = 'move';
+});
+
+// Add mouse wheel zoom
+fullMapContainer.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+  const newZoom = currentZoom * zoomFactor;
+  
+  if (newZoom >= 0.2 && newZoom <= 5) {
+    // Calculate mouse position relative to container
+    const rect = fullMapContainer.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Adjust pan offset to zoom around mouse position
+    panOffsetX = mouseX - (mouseX - panOffsetX) * zoomFactor;
+    panOffsetY = mouseY - (mouseY - panOffsetY) * zoomFactor;
+    
+    currentZoom = newZoom;
+    updateMapTransform();
+  }
+});
+
+// Function to center the map on the current marker
+function centerOnMarker() {
+  if (!globalMarker || !fullMapCanvas) return;
+  
+  const containerRect = fullMapContainer.parentElement.getBoundingClientRect();
+  const markerX = globalMarker.col * autoMapTileSize;
+  const markerY = globalMarker.row * autoMapTileSize;
+  
+  panOffsetX = (containerRect.width / 2) - (markerX * currentZoom);
+  panOffsetY = (containerRect.height / 2) - (markerY * currentZoom);
+  
+  updateMapTransform();
+}
+
+// Auto-center when starting auto map
+const originalToggleAutoMap = toggleAutoMap;
+toggleAutoMap = function() {
+  originalToggleAutoMap();
+  if (autoMapRunning) {
+    centerOnMarker();
+  }
+};
