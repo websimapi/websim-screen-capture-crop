@@ -11,7 +11,7 @@ header {
   margin-bottom: 20px;
 }
 
-#capture-section, #crop-inputs, #crop-output {
+#capture-section, #crop-output {
   margin-bottom: 30px;
   background: #fff;
   padding: 15px;
@@ -25,6 +25,7 @@ header {
   max-width: 800px;
   margin: 0 auto;
   border: 2px solid #333;
+  overflow: hidden;
 }
 
 #screenVideo {
@@ -33,18 +34,15 @@ header {
   display: block;
 }
 
-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
+/* Crop overlay for interactive selection */
+#cropOverlay {
+  position: absolute;
+  border: 2px dashed #ff0000;
+  background: rgba(255, 0, 0, 0.2);
+  pointer-events: none;
 }
 
-input[type="number"] {
-  width: 80px;
-  padding: 5px;
-}
-
+/* Button style */
 button {
   padding: 7px 15px;
   cursor: pointer;

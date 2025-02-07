@@ -13,21 +13,9 @@
       <button id="startCaptureButton">Start Screen Capture</button>
       <div id="videoContainer">
         <video id="screenVideo" autoplay playsinline></video>
+        <!-- Overlay for cropping selection -->
+        <div id="cropOverlay"></div>
       </div>
-    </section>
-    <section id="crop-inputs">
-      <h2>Crop Settings</h2>
-      <form id="cropForm">
-        <label for="cropX">X:</label>
-        <input type="number" id="cropX" name="cropX" value="0" min="0">
-        <label for="cropY">Y:</label>
-        <input type="number" id="cropY" name="cropY" value="0" min="0">
-        <label for="cropWidth">Width:</label>
-        <input type="number" id="cropWidth" name="cropWidth" value="300" min="1">
-        <label for="cropHeight">Height:</label>
-        <input type="number" id="cropHeight" name="cropHeight" value="200" min="1">
-        <button type="submit">Apply Crop</button>
-      </form>
     </section>
     <section id="crop-output">
       <h2>Cropped Output</h2>
