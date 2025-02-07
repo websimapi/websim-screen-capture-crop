@@ -78,3 +78,8 @@ button:hover {
 #world-map-output {
   width: 420px;
 }
+
+#movementInfo {
+  margin-top: 10px;
+  text-align: center;
+}
