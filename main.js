@@ -17,14 +17,13 @@ let isDragging = false;
 let startX = 0;
 let startY = 0;
 
-// Start screen capture
+// Start screen capture using getDisplayMedia.
 async function startCapture() {
   try {
     captureStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
     screenVideo.srcObject = captureStream;
-    // Wait for video metadata to load to know dimensions
     screenVideo.onloadedmetadata = () => {
-      // Set default canvas dimensions based on video cropping settings.
+      // Initialize canvas dimensions.
       cropCanvas.width = cropSettings.width;
       cropCanvas.height = cropSettings.height;
       requestAnimationFrame(updateCrop);
@@ -34,7 +33,7 @@ async function startCapture() {
   }
 }
 
-// Continuously update the crop output canvas from the video feed.
+// Continuously update the cropped output canvas from the video feed.
 function updateCrop() {
   if (screenVideo.readyState >= 2) { // HAVE_CURRENT_DATA
     try {
@@ -49,7 +48,7 @@ function updateCrop() {
         cropSettings.width,
         cropSettings.height
       );
-      // After drawing the cropped image, attempt to detect a white circle.
+      // After drawing, detect the best matching white circle.
       detectWhiteCircle();
     } catch (e) {
       console.warn('Video not ready for drawing', e);
@@ -58,48 +57,92 @@ function updateCrop() {
   requestAnimationFrame(updateCrop);
 }
 
-// Detect a white circle in the cropped canvas and outline it.
-// A simple approach: scan image data to find white-ish pixels, compute bounding box, then draw a circle.
+// Detect the largest connected white region and outline it as a circle.
 function detectWhiteCircle() {
   if (cropCanvas.width === 0 || cropCanvas.height === 0) return;
   
   const imageData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
   const data = imageData.data;
+  const width = cropCanvas.width;
+  const height = cropCanvas.height;
   
-  let minX = cropCanvas.width, minY = cropCanvas.height;
-  let maxX = 0, maxY = 0;
-  let found = false;
+  // Create a visited array for flood fill.
+  const visited = new Uint8Array(width * height);
   
-  // Threshold for white: all channels above a certain value.
+  // Threshold value for considering a pixel white.
   const threshold = 240;
   
-  for (let y = 0; y < cropCanvas.height; y++) {
-    for (let x = 0; x < cropCanvas.width; x++) {
-      const index = (y * cropCanvas.width + x) * 4;
-      const r = data[index];
-      const g = data[index + 1];
-      const b = data[index + 2];
-      const a = data[index + 3];
+  let bestRegion = null;
+  
+  // Helper: perform flood fill to get connected white region.
+  function floodFill(x, y) {
+    const stack = [[x, y]];
+    let minX = x, minY = y, maxX = x, maxY = y;
+    let pixelCount = 0;
+    
+    while (stack.length) {
+      const [cx, cy] = stack.pop();
+      const idx = cy * width + cx;
+      if (visited[idx]) continue;
+      visited[idx] = 1;
       
-      // Check if pixel is almost white
+      const dataIdx = idx * 4;
+      const r = data[dataIdx];
+      const g = data[dataIdx + 1];
+      const b = data[dataIdx + 2];
+      const a = data[dataIdx + 3];
+      
+      if (a === 0 || r < threshold || g < threshold || b < threshold) continue;
+      
+      pixelCount++;
+      if (cx < minX) minX = cx;
+      if (cy < minY) minY = cy;
+      if (cx > maxX) maxX = cx;
+      if (cy > maxY) maxY = cy;
+      
+      // Check neighbors.
+      if (cx > 0) stack.push([cx - 1, cy]);
+      if (cx < width - 1) stack.push([cx + 1, cy]);
+      if (cy > 0) stack.push([cx, cy - 1]);
+      if (cy < height - 1) stack.push([cx, cy + 1]);
+    }
+    
+    return { minX, minY, maxX, maxY, pixelCount };
+  }
+  
+  // Loop through pixels and apply flood fill for white areas.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (visited[idx]) continue;
+      
+      const dataIdx = idx * 4;
+      const r = data[dataIdx];
+      const g = data[dataIdx + 1];
+      const b = data[dataIdx + 2];
+      const a = data[dataIdx + 3];
+      
       if (a > 0 && r >= threshold && g >= threshold && b >= threshold) {
-        found = true;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
+        const region = floodFill(x, y);
+        // Consider region only if it's of a reasonable size.
+        if (region.pixelCount > 50) {
+          if (!bestRegion || region.pixelCount > bestRegion.pixelCount) {
+            bestRegion = region;
+          }
+        }
       }
     }
   }
   
-  if (found) {
-    // Clear previous overlay drawing by redrawing the image before drawing the outline.
-    // Get center and approximate radius.
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const radius = Math.max((maxX - minX), (maxY - minY)) / 2;
+  // If found a best region, draw a circle:
+  if (bestRegion) {
+    const centerX = (bestRegion.minX + bestRegion.maxX) / 2;
+    const centerY = (bestRegion.minY + bestRegion.maxY) / 2;
+    const radius = Math.max(bestRegion.maxX - bestRegion.minX, bestRegion.maxY - bestRegion.minY) / 2;
     
-    // Draw a green circle outlining the detected white area.
+    // Clear any previous overlay by redrawing the image data.
+    cropCtx.putImageData(imageData, 0, 0);
+    
     cropCtx.beginPath();
     cropCtx.lineWidth = 3;
     cropCtx.strokeStyle = '#00FF00';
@@ -108,19 +151,17 @@ function detectWhiteCircle() {
   }
 }
 
-// Get the offset of the videoContainer relative to the page.
+// Get video container's offset relative to the page.
 function getContainerOffset() {
   const rect = videoContainer.getBoundingClientRect();
   return { left: rect.left, top: rect.top };
 }
 
-// Convert overlay selection dimensions to video coordinates.
+// Update crop settings based on overlay selection.
 function updateCropSettingsFromOverlay() {
-  // Current overlay bounding box relative to videoContainer.
   const containerRect = videoContainer.getBoundingClientRect();
   const overlayRect = cropOverlay.getBoundingClientRect();
 
-  // Calculate relative selection coordinates.
   const scaleX = screenVideo.videoWidth / containerRect.width;
   const scaleY = screenVideo.videoHeight / containerRect.height;
 
@@ -134,20 +175,17 @@ function updateCropSettingsFromOverlay() {
     height: Math.round(overlayRect.height * scaleY)
   };
 
-  // Update canvas dimensions based on new crop dimensions.
   cropCanvas.width = cropSettings.width;
   cropCanvas.height = cropSettings.height;
 }
 
-// Mouse event handlers for drag selection on the video container.
+// Mouse event handlers for drag selection.
 videoContainer.addEventListener('mousedown', (e) => {
-  // Only activate if screen capture started.
   if (!captureStream) return;
   isDragging = true;
   const containerRect = videoContainer.getBoundingClientRect();
   startX = e.clientX - containerRect.left;
   startY = e.clientY - containerRect.top;
-  // Initialize overlay element.
   cropOverlay.style.left = `${startX}px`;
   cropOverlay.style.top = `${startY}px`;
   cropOverlay.style.width = `0px`;
@@ -161,13 +199,11 @@ window.addEventListener('mousemove', (e) => {
   const currentX = e.clientX - containerRect.left;
   const currentY = e.clientY - containerRect.top;
 
-  // Calculate dimensions for the overlay.
   const rectX = Math.min(startX, currentX);
   const rectY = Math.min(startY, currentY);
   const rectWidth = Math.abs(currentX - startX);
   const rectHeight = Math.abs(currentY - startY);
 
-  // Update overlay style.
   cropOverlay.style.left = `${rectX}px`;
   cropOverlay.style.top = `${rectY}px`;
   cropOverlay.style.width = `${rectWidth}px`;
